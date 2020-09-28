@@ -1,170 +1,8 @@
 use std::fmt;
 use std::fmt::Write;
 
-#[derive(Clone)]
-pub enum Predicate {
-    Comparison(Comparison),
-    Conjunction(Vec<Predicate>),
-    Disjunction(Vec<Predicate>),
-}
-
-impl Predicate {
-    pub fn with_value(v: bool) -> Self {
-        if v {
-            Predicate::Conjunction(Default::default())
-        } else {
-            Predicate::Disjunction(Default::default())
-        }
-    }
-
-    pub fn condense(self) -> Self {
-        match self {
-            Predicate::Conjunction(mut terms) => {
-                let mut new_terms = vec![];
-
-                while let Some(term) = terms.pop() {
-                    let mut new_term = term.condense();
-                    match new_term {
-                        Predicate::Conjunction(ref mut sub_terms) => new_terms.append(sub_terms),
-                        Predicate::Disjunction(sub_terms) => {
-                            if (sub_terms).is_empty() {
-                                return Predicate::with_value(false);
-                            }
-
-                            new_terms.push(Predicate::Disjunction(sub_terms));
-                        }
-                        comparison => new_terms.push(comparison),
-                    }
-                }
-
-                if new_terms.len() == 1 {
-                    return new_terms.pop().unwrap();
-                }
-
-                Predicate::Conjunction(new_terms)
-            }
-            Predicate::Disjunction(mut terms) => {
-                let mut new_terms = vec![];
-
-                while let Some(term) = terms.pop() {
-                    let mut new_term = term.condense();
-                    match new_term {
-                        Predicate::Conjunction(sub_terms) => {
-                            if sub_terms.is_empty() {
-                                return Predicate::with_value(true);
-                            }
-
-                            new_terms.push(Predicate::Conjunction(sub_terms));
-                        }
-                        Predicate::Disjunction(ref mut sub_terms) => new_terms.append(sub_terms),
-                        comparison => new_terms.push(comparison),
-                    }
-                }
-
-                if new_terms.len() == 1 {
-                    return new_terms.pop().unwrap();
-                }
-
-                Predicate::Disjunction(new_terms)
-            }
-            _ => self,
-        }
-    }
-
-    fn to_string_internal(&self, mut indent: String, first: bool, last: bool) -> String {
-        let mut out = indent.clone();
-
-        if !first && last {
-            out += "└── ";
-            indent += "    ";
-        } else if !last {
-            out += "├── ";
-            indent += "│   ";
-        }
-
-        match self {
-            Predicate::Comparison(comparison) => {
-                out += &format!("{}\n", comparison.to_string());
-            }
-            Predicate::Conjunction(terms) => {
-                if terms.is_empty() {
-                    out += "true\n";
-                } else {
-                    out += "AND\n";
-                    for i in 0..terms.len() {
-                        out += &terms[i].to_string_internal(
-                            indent.clone(),
-                            false,
-                            i == terms.len() - 1,
-                        );
-                    }
-                }
-            }
-            Predicate::Disjunction(terms) => {
-                if terms.is_empty() {
-                    out += "false\n";
-                } else {
-                    out += "OR\n";
-                    for i in 0..terms.len() {
-                        out += &terms[i].to_string_internal(
-                            indent.clone(),
-                            false,
-                            i == terms.len() - 1,
-                        );
-                    }
-                }
-            }
-        }
-
-        out
-    }
-}
-
-impl fmt::Display for Predicate {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut s = self.to_string_internal("".to_string(), true, true);
-        s.pop(); // Remove the trailing newline
-        f.write_str(&s)
-    }
-}
-
-#[derive(Clone)]
-pub struct Comparison {
-    operator: Operator,
-    left: Operand,
-    right: Operand,
-}
-
-impl Comparison {
-    pub fn new(operator: Operator, left: Operand, right: Operand) -> Self {
-        Comparison {
-            operator,
-            left,
-            right,
-        }
-    }
-
-    pub fn get_operator(&self) -> Operator {
-        self.operator
-    }
-
-    pub fn get_left(&self) -> Operand {
-        self.left.clone()
-    }
-
-    pub fn get_right(&self) -> Operand {
-        self.right.clone()
-    }
-}
-
-impl fmt::Display for Comparison {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} {} {}", self.left, self.operator, self.right)
-    }
-}
-
 #[derive(Clone, Copy)]
-pub enum Operator {
+pub enum Comparison {
     Equal,
     NotEqual,
     Less,
@@ -173,15 +11,15 @@ pub enum Operator {
     GreaterEqual,
 }
 
-impl fmt::Display for Operator {
+impl fmt::Display for Comparison {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_char(match self {
-            Operator::Equal => '=',
-            Operator::NotEqual => '≠',
-            Operator::Less => '<',
-            Operator::LessEqual => '≤',
-            Operator::Greater => '>',
-            Operator::GreaterEqual => '≥',
+            Comparison::Equal => '=',
+            Comparison::NotEqual => '≠',
+            Comparison::Less => '<',
+            Comparison::LessEqual => '≤',
+            Comparison::Greater => '>',
+            Comparison::GreaterEqual => '≥',
         })
     }
 }
@@ -198,5 +36,122 @@ impl fmt::Display for Operand {
             Operand::Column(id) => write!(f, "col({})", id),
             Operand::Variable(id) => write!(f, "var({})", id),
         }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub enum Connective {
+    Conjunction,
+    Disjunction,
+}
+
+#[derive(Clone)]
+pub enum Predicate {
+    Comparison(Comparison, Operand, Operand),
+    Connective(Connective, Vec<Predicate>),
+}
+
+impl Predicate {
+    pub fn comparison(comparison: Comparison, left: Operand, right: Operand) -> Self {
+        Predicate::Comparison(comparison, left, right)
+    }
+
+    pub fn conjunction(terms: Vec<Predicate>) -> Self {
+        Predicate::Connective(Connective::Conjunction, terms)
+    }
+
+    pub fn disjunction(terms: Vec<Predicate>) -> Self {
+        Predicate::Connective(Connective::Disjunction, terms)
+    }
+
+    pub fn boolean(v: bool) -> Self {
+        if v {
+            Predicate::conjunction(Default::default())
+        } else {
+            Predicate::disjunction(Default::default())
+        }
+    }
+
+    pub fn condense(self) -> Self {
+        match self {
+            Predicate::Connective(connective, mut terms) => {
+                let mut new_terms = vec![];
+
+                while let Some(term) = terms.pop() {
+                    let new_term = term.condense();
+                    match new_term {
+                        Predicate::Connective(sub_connective, sub_terms) => {
+                            if connective == sub_connective {
+                                new_terms.extend(sub_terms);
+                            } else {
+                                if sub_terms.is_empty() {
+                                    return Predicate::Connective(sub_connective, sub_terms);
+                                }
+
+                                new_terms.push(Predicate::Connective(sub_connective, sub_terms));
+                            }
+                        }
+                        comparison => new_terms.push(comparison),
+                    };
+                }
+
+                if new_terms.len() == 1 {
+                    new_terms.pop().unwrap()
+                } else {
+                    Predicate::Connective(connective, new_terms)
+                }
+            }
+            _ => self,
+        }
+    }
+
+    fn fmt_internal(
+        &self,
+        f: &mut fmt::Formatter,
+        mut indent: String,
+        first: bool,
+        last: bool,
+    ) -> fmt::Result {
+        f.write_str(&indent)?;
+
+        if !first && last {
+            f.write_str("└── ")?;
+            indent += "    ";
+        } else if !last {
+            f.write_str("├── ")?;
+            indent += "│   ";
+        }
+
+        match self {
+            Predicate::Comparison(comparison, left, right) => {
+                write!(f, "{} {} {}", left, comparison, right)?;
+            }
+            Predicate::Connective(connective, terms) => {
+                if terms.is_empty() {
+                    match connective {
+                        Connective::Conjunction => f.write_str("TRUE")?,
+                        Connective::Disjunction => f.write_str("FALSE")?,
+                    }
+                } else {
+                    match connective {
+                        Connective::Conjunction => f.write_str("AND")?,
+                        Connective::Disjunction => f.write_str("OR")?,
+                    }
+
+                    for i in 0..terms.len() {
+                        f.write_char('\n')?;
+                        terms[i].fmt_internal(f, indent.clone(), false, i == terms.len() - 1)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl fmt::Display for Predicate {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.fmt_internal(f, "".to_string(), true, true)
     }
 }
