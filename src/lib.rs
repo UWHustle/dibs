@@ -4,34 +4,26 @@ mod solver;
 #[cfg(test)]
 mod tests {
     use crate::predicate::{Comparison, Operand, Predicate};
-    use crate::solver;
+    use crate::solver::Solver;
 
     #[test]
     fn it_works() {
-        let p = Predicate::disjunction(vec![
-            Predicate::comparison(Comparison::Equal, Operand::Column(0), Operand::Variable(1)),
-            Predicate::conjunction(vec![
-                Predicate::comparison(Comparison::Equal, Operand::Column(1), Operand::Variable(2)),
-                Predicate::comparison(Comparison::Equal, Operand::Column(1), Operand::Variable(3)),
-            ]),
+        let p = Predicate::conjunction(vec![
+            Predicate::comparison(Comparison::Equal, Operand::Column(0), Operand::Variable(0)),
+            Predicate::comparison(Comparison::Equal, Operand::Column(1), Operand::Variable(1)),
         ]);
 
-        let q = Predicate::conjunction(vec![
-            Predicate::comparison(Comparison::Equal, Operand::Column(0), Operand::Variable(4)),
-            Predicate::comparison(Comparison::Equal, Operand::Column(1), Operand::Variable(5)),
+        let q = Predicate::disjunction(vec![
+            Predicate::comparison(Comparison::Equal, Operand::Column(0), Operand::Variable(2)),
+            Predicate::comparison(Comparison::Equal, Operand::Column(1), Operand::Variable(3)),
         ]);
 
-        println!("Predicate P:");
-        println!("{}", p);
-        println!();
+        println!("Predicate P:\n{}\n", p);
 
-        println!("Predicate Q:");
-        println!("{}", q);
-        println!();
+        println!("Predicate Q:\n{}\n", q);
 
-        let r = solver::solve(p, q).condense();
+        let mut s = Solver::new(p.clone(), q.clone());
 
-        println!("Predicate R:");
-        println!("{}", r);
+        println!("Predicate R:\n{}", s.next().unwrap());
     }
 }

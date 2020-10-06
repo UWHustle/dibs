@@ -39,7 +39,7 @@ impl fmt::Display for Operand {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Connective {
     Conjunction,
     Disjunction,
@@ -52,57 +52,101 @@ pub enum Predicate {
 }
 
 impl Predicate {
-    pub fn comparison(comparison: Comparison, left: Operand, right: Operand) -> Self {
+    pub fn comparison(comparison: Comparison, left: Operand, right: Operand) -> Predicate {
         Predicate::Comparison(comparison, left, right)
     }
 
-    pub fn conjunction(terms: Vec<Predicate>) -> Self {
-        Predicate::Connective(Connective::Conjunction, terms)
+    pub fn conjunction(operands: Vec<Predicate>) -> Predicate {
+        Predicate::Connective(Connective::Conjunction, operands)
     }
 
-    pub fn disjunction(terms: Vec<Predicate>) -> Self {
-        Predicate::Connective(Connective::Disjunction, terms)
+    pub fn disjunction(operands: Vec<Predicate>) -> Predicate {
+        Predicate::Connective(Connective::Disjunction, operands)
     }
 
-    pub fn boolean(v: bool) -> Self {
+    pub fn boolean(v: bool) -> Predicate {
         if v {
-            Predicate::conjunction(Default::default())
+            Predicate::conjunction(vec![])
         } else {
-            Predicate::disjunction(Default::default())
+            Predicate::disjunction(vec![])
         }
     }
 
-    pub fn condense(self) -> Self {
-        match self {
-            Predicate::Connective(connective, mut terms) => {
-                let mut new_terms = vec![];
+    pub fn condense(&mut self) {
+        let mut stack = vec![self as *mut Predicate];
 
-                while let Some(term) = terms.pop() {
-                    let new_term = term.condense();
-                    match new_term {
-                        Predicate::Connective(sub_connective, sub_terms) => {
-                            if connective == sub_connective {
-                                new_terms.extend(sub_terms);
-                            } else {
-                                if sub_terms.is_empty() {
-                                    return Predicate::Connective(sub_connective, sub_terms);
-                                }
+        while let Some(node_ptr) = stack.pop() {
+            let node = unsafe { &mut *node_ptr };
 
-                                new_terms.push(Predicate::Connective(sub_connective, sub_terms));
+            if let Predicate::Connective(connective, operands) = node {
+                let mut i = 0;
+                while i < operands.len() {
+                    match operands[i] {
+                        Predicate::Connective(sub_connective, _)
+                            if sub_connective == *connective =>
+                        {
+                            if let Predicate::Connective(_, sub_operands) = operands.swap_remove(i)
+                            {
+                                operands.extend(sub_operands);
                             }
                         }
-                        comparison => new_terms.push(comparison),
-                    };
+                        Predicate::Connective(_, ref sub_operands) if sub_operands.is_empty() => {
+                            operands.clear();
+                        }
+                        _ => i += 1,
+                    }
                 }
 
-                if new_terms.len() == 1 {
-                    new_terms.pop().unwrap()
+                if operands.len() == 1 {
+                    *node = operands.pop().unwrap();
                 } else {
-                    Predicate::Connective(connective, new_terms)
+                    for operand in operands {
+                        stack.push(operand as *mut Predicate);
+                    }
                 }
             }
-            _ => self,
         }
+    }
+
+    pub fn disjunctive_normalize(&mut self) {
+        let mut stack = vec![self as *mut Predicate];
+
+        while let Some(node_ptr) = stack.pop() {
+            let node = unsafe { &mut *node_ptr };
+
+            if let Predicate::Connective(connective, operands) = node {
+                if *connective == Connective::Conjunction {
+                    let disjunction_position = operands.iter().position(|operand| match operand {
+                        Predicate::Connective(_sub_connective @ Connective::Disjunction, _) => true,
+                        _ => false,
+                    });
+
+                    if let Some(i) = disjunction_position {
+                        let disjunction = operands.swap_remove(i);
+                        let mut new_operands = vec![];
+
+                        if let Predicate::Connective(_, disjunction_operands) = disjunction {
+                            for disjunction_operand in disjunction_operands {
+                                let mut conjunction_operands = operands.clone();
+                                conjunction_operands.push(disjunction_operand);
+                                new_operands.push(Predicate::conjunction(conjunction_operands));
+                            }
+                        }
+
+                        *connective = Connective::Disjunction;
+                        *operands = new_operands;
+                    }
+                }
+
+                for operand in operands {
+                    stack.push(operand as *mut Predicate);
+                }
+            }
+        }
+    }
+
+    pub fn preorder(&self) -> PreorderIter {
+        PreorderIter::new(self)
     }
 
     fn fmt_internal(
@@ -126,8 +170,8 @@ impl Predicate {
             Predicate::Comparison(comparison, left, right) => {
                 write!(f, "{} {} {}", left, comparison, right)?;
             }
-            Predicate::Connective(connective, terms) => {
-                if terms.is_empty() {
+            Predicate::Connective(connective, operands) => {
+                if operands.is_empty() {
                     match connective {
                         Connective::Conjunction => f.write_str("TRUE")?,
                         Connective::Disjunction => f.write_str("FALSE")?,
@@ -138,9 +182,14 @@ impl Predicate {
                         Connective::Disjunction => f.write_str("OR")?,
                     }
 
-                    for i in 0..terms.len() {
+                    for i in 0..operands.len() {
                         f.write_char('\n')?;
-                        terms[i].fmt_internal(f, indent.clone(), false, i == terms.len() - 1)?;
+                        operands[i].fmt_internal(
+                            f,
+                            indent.clone(),
+                            false,
+                            i == operands.len() - 1,
+                        )?;
                     }
                 }
             }
@@ -153,5 +202,31 @@ impl Predicate {
 impl fmt::Display for Predicate {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.fmt_internal(f, "".to_string(), true, true)
+    }
+}
+
+pub struct PreorderIter<'a> {
+    stack: Vec<&'a Predicate>,
+}
+
+impl<'a> PreorderIter<'a> {
+    fn new(p: &'a Predicate) -> PreorderIter {
+        PreorderIter { stack: vec![p] }
+    }
+}
+
+impl<'a> Iterator for PreorderIter<'a> {
+    type Item = &'a Predicate;
+
+    fn next(&mut self) -> Option<&'a Predicate> {
+        let node = self.stack.pop()?;
+
+        if let Predicate::Connective(_, operands) = node {
+            for operand in operands.iter().rev() {
+                self.stack.push(operand);
+            }
+        }
+
+        Some(node)
     }
 }
