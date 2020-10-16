@@ -1,322 +1,367 @@
-use crate::predicate::{Comparison, Comparison::*, Connective, Operand, Predicate};
-use fnv::FnvHashSet;
-use std::collections::VecDeque;
-use std::iter::FromIterator;
+use crate::predicate::{Comparison, Connective, Predicate, Value};
+use crate::union_find::UnionFind;
+use fnv::FnvHashMap;
+use std::borrow::Cow;
 use std::{mem, slice};
 
-pub struct Solver {
-    pq: Option<(Predicate, Predicate)>,
-    queue: VecDeque<(Predicate, Predicate)>,
+fn prepare_comparison_comparison(p: &Comparison, q: &Comparison, swap: bool) -> Predicate {
+    use crate::predicate::ComparisonOperator::*;
+
+    if p.left != q.left {
+        return Predicate::boolean(true);
+    }
+
+    let mut p_ref = Cow::Borrowed(p);
+    let mut q_ref = Cow::Borrowed(q);
+
+    if swap {
+        mem::swap(p_ref.to_mut(), q_ref.to_mut());
+    }
+
+    match (p_ref.operator, q_ref.operator) {
+        (Eq, Eq) => Predicate::comparison(Eq, p_ref.right, q_ref.right),
+        (Eq, Ne) | (Ne, Eq) => Predicate::comparison(Ne, p_ref.right, q_ref.right),
+        (Eq, Lt) | (Gt, Eq) | (Gt, Lt) | (Ge, Lt) | (Gt, Le) => {
+            Predicate::comparison(Lt, p_ref.right, q_ref.right)
+        }
+        (Eq, Le) | (Ge, Eq) | (Ge, Le) => Predicate::comparison(Le, p_ref.right, q_ref.right),
+        (Eq, Gt) | (Lt, Eq) | (Lt, Gt) | (Le, Gt) | (Lt, Ge) => {
+            Predicate::comparison(Gt, p_ref.right, q_ref.right)
+        }
+        (Eq, Ge) | (Le, Eq) | (Le, Ge) => Predicate::comparison(Ge, p_ref.right, q_ref.right),
+        _ => Predicate::boolean(true),
+    }
 }
 
-impl Solver {
-    pub fn new(p: Predicate, q: Predicate) -> Solver {
-        let mut queue = VecDeque::new();
-
-        for p_node in match &p {
-            Predicate::Connective(_connective @ Connective::Conjunction, operands) => operands,
-            _ => slice::from_ref(&p),
-        } {
-            if let Predicate::Comparison(_, p_left, _) = p_node {
-                for q_node in match &q {
-                    Predicate::Connective(_connective @ Connective::Conjunction, operands) => {
-                        operands
-                    }
-                    _ => slice::from_ref(&q),
-                } {
-                    if let Predicate::Comparison(_, q_left, _) = q_node {
-                        if p_left == q_left {
-                            queue.push_back((p_node.clone(), q_node.clone()));
-                        }
-                    }
+fn prepare_comparison_conjunction(p: &Comparison, q: &[Predicate], swap: bool) -> Predicate {
+    Predicate::conjunction(
+        q.iter()
+            .filter_map(|q_conjunct| match q_conjunct {
+                Predicate::Comparison(q_comparison) => {
+                    Some(prepare_comparison_comparison(p, q_comparison, swap))
                 }
-            }
-        }
-
-        Solver {
-            pq: Some((p, q)),
-            queue,
-        }
-    }
-
-    fn solve_comparisons(
-        p_comparison: Comparison,
-        p_left: Operand,
-        p_right: Operand,
-        q_comparison: Comparison,
-        q_left: Operand,
-        q_right: Operand,
-    ) -> Predicate {
-        if p_left != q_left {
-            return Predicate::boolean(true);
-        }
-
-        match (p_comparison, q_comparison) {
-            (Equal, Equal) => Some(Equal),
-
-            (Equal, NotEqual) | (NotEqual, Equal) => Some(NotEqual),
-
-            (Equal, Less)
-            | (Greater, Equal)
-            | (Greater, Less)
-            | (GreaterEqual, Less)
-            | (Greater, LessEqual) => Some(Less),
-
-            (Equal, LessEqual) | (GreaterEqual, Equal) | (GreaterEqual, LessEqual) => {
-                Some(LessEqual)
-            }
-
-            (Equal, Greater)
-            | (Less, Equal)
-            | (Less, Greater)
-            | (LessEqual, Greater)
-            | (Less, GreaterEqual) => Some(Greater),
-
-            (Equal, GreaterEqual) | (LessEqual, Equal) | (LessEqual, GreaterEqual) => {
-                Some(GreaterEqual)
-            }
-
-            _ => None,
-        }
-        .map(|comparison| Predicate::Comparison(comparison, p_right, q_right))
-        .unwrap_or(Predicate::boolean(true))
-    }
-
-    fn solve_conjunctions(p: &[Predicate], q: &[Predicate]) -> Predicate {
-        let mut r_operands = vec![];
-
-        for p_operand in p {
-            for q_operand in q {
-                let r_operand = match (p_operand, q_operand) {
-                    (
-                        Predicate::Comparison(p_comparison, p_left, p_right),
-                        Predicate::Comparison(q_comparison, q_left, q_right),
-                    ) => Solver::solve_comparisons(
-                        *p_comparison,
-                        *p_left,
-                        *p_right,
-                        *q_comparison,
-                        *q_left,
-                        *q_right,
-                    ),
-                    _ => panic!("predicate is not in condensed disjunctive normal form"),
-                };
-
-                r_operands.push(r_operand);
-            }
-        }
-
-        Predicate::conjunction(r_operands)
-    }
-
-    fn solve_disjunctions(p: &[Predicate], q: &[Predicate]) -> Predicate {
-        let mut r_operands = vec![];
-
-        for p_operand in p {
-            for q_operand in q {
-                let r_operand = match (p_operand, q_operand) {
-                    (
-                        Predicate::Comparison(p_comparison, p_left, p_right),
-                        Predicate::Comparison(q_comparison, q_left, q_right),
-                    ) => Solver::solve_comparisons(
-                        *p_comparison,
-                        *p_left,
-                        *p_right,
-                        *q_comparison,
-                        *q_left,
-                        *q_right,
-                    ),
-                    _ => Solver::solve_conjunctions(
-                        Solver::conjuncts(p_operand),
-                        Solver::conjuncts(q_operand),
-                    ),
-                };
-
-                r_operands.push(r_operand)
-            }
-        }
-
-        Predicate::disjunction(r_operands)
-    }
-
-    fn conjuncts(p: &Predicate) -> &[Predicate] {
-        match p {
-            Predicate::Connective(_connective @ Connective::Conjunction, operands) => operands,
-            _ => slice::from_ref(p),
-        }
-    }
-
-    fn column_sets(conjuncts: &[Predicate]) -> Vec<FnvHashSet<usize>> {
-        conjuncts
-            .iter()
-            .map(|conjunct| match conjunct {
-                Predicate::Comparison(_, left, right) => {
-                    assert_eq!(
-                        mem::discriminant(right),
-                        mem::discriminant(&Operand::Variable(Default::default())),
-                        "operands on the right-hand side of comparisons must be variables"
-                    );
-
-                    let mut column_set = FnvHashSet::default();
-
-                    column_set.insert(match left {
-                        Operand::Column(id) => *id,
-                        _ => {
-                            panic!("operands on the left-hand side of comparisons must be columns")
-                        }
-                    });
-
-                    column_set
-                }
-
-                Predicate::Connective(connective, _) => {
-                    assert_eq!(
-                        *connective,
-                        Connective::Disjunction,
-                        "predicate must be condensed conjunctive normal form"
-                    );
-
-                    FnvHashSet::from_iter(conjunct.preorder().filter_map(|node| match node {
-                        Predicate::Comparison(_, left, right) => {
-                            assert_eq!(
-                                mem::discriminant(right),
-                                mem::discriminant(&Operand::Variable(Default::default())),
-                                "operands on the right-hand side of comparisons must be variables"
-                            );
-
-                            match left {
-                                Operand::Column(id) => Some(*id),
-                                _ => panic!(
-                                    "operands on the left-hand side of comparisons must be columns"
-                                ),
-                            }
-                        }
-                        _ => None,
-                    }))
-                }
+                _ => None,
             })
-            .collect()
+            .collect(),
+    )
+}
+
+fn prepare_comparison_disjunction(p: &Comparison, q: &[Predicate], swap: bool) -> Predicate {
+    Predicate::disjunction(
+        q.iter()
+            .filter_map(|q_disjunct| match q_disjunct {
+                Predicate::Comparison(q_comparison) => {
+                    Some(prepare_comparison_comparison(p, q_comparison, swap))
+                }
+                Predicate::Connective(_q_connective @ Connective::Conjunction, q_operands) => {
+                    Some(prepare_comparison_conjunction(p, q_operands, swap))
+                }
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+fn prepare_conjunction_comparison(p: &[Predicate], q: &Comparison, swap: bool) -> Predicate {
+    prepare_comparison_conjunction(q, p, !swap)
+}
+
+fn prepare_conjunction_conjunction(p: &[Predicate], q: &[Predicate], swap: bool) -> Predicate {
+    Predicate::conjunction(
+        p.iter()
+            .filter_map(|p_conjunct| match p_conjunct {
+                Predicate::Comparison(p_comparison) => {
+                    Some(prepare_comparison_conjunction(p_comparison, q, swap))
+                }
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+fn prepare_conjunction_disjunction(p: &[Predicate], q: &[Predicate], swap: bool) -> Predicate {
+    Predicate::disjunction(
+        q.iter()
+            .filter_map(|q_disjunct| match q_disjunct {
+                Predicate::Comparison(q_comparison) => {
+                    Some(prepare_conjunction_comparison(p, q_comparison, swap))
+                }
+                Predicate::Connective(_q_connective @ Connective::Conjunction, q_operands) => {
+                    Some(prepare_conjunction_conjunction(p, q_operands, swap))
+                }
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+fn prepare_disjunction_comparison(p: &[Predicate], q: &Comparison, swap: bool) -> Predicate {
+    prepare_comparison_disjunction(q, p, !swap)
+}
+
+fn prepare_disjunction_conjunction(p: &[Predicate], q: &[Predicate], swap: bool) -> Predicate {
+    prepare_conjunction_disjunction(q, p, !swap)
+}
+
+fn prepare_disjunction_disjunction(p: &[Predicate], q: &[Predicate], swap: bool) -> Predicate {
+    Predicate::disjunction(
+        p.iter()
+            .filter_map(|p_disjunct| match p_disjunct {
+                Predicate::Comparison(p_comparison) => {
+                    Some(prepare_comparison_disjunction(p_comparison, q, swap))
+                }
+                Predicate::Connective(_p_connective @ Connective::Conjunction, p_operands) => {
+                    Some(prepare_conjunction_disjunction(p_operands, q, swap))
+                }
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+fn solve_comparison_comparison(
+    p: &Comparison,
+    p_args: &[Value],
+    q: &Comparison,
+    q_args: &[Value],
+) -> bool {
+    use crate::predicate::ComparisonOperator::*;
+
+    if p.left != q.left {
+        return true;
     }
 
-    fn intersecting(
-        column_set: &FnvHashSet<usize>,
-        other_column_sets: &[FnvHashSet<usize>],
-    ) -> Vec<usize> {
-        other_column_sets
-            .iter()
-            .enumerate()
-            .filter(|(_, other_column_set)| !other_column_set.is_disjoint(column_set))
-            .map(|(i, _)| i)
-            .collect()
+    let p_value = &p_args[p.right];
+    let q_value = &q_args[q.right];
+
+    assert_eq!(
+        mem::discriminant(p_value),
+        mem::discriminant(q_value),
+        "cannot solve comparisons between different types"
+    );
+
+    match (p.operator, q.operator) {
+        (Eq, Eq) => p_value == q_value,
+        (Eq, Ne) | (Ne, Eq) => p_value != q_value,
+        (Eq, Lt) | (Gt, Eq) | (Gt, Lt) | (Ge, Lt) | (Gt, Le) => p_value < q_value,
+        (Eq, Le) | (Ge, Eq) | (Ge, Le) => p_value <= q_value,
+        (Eq, Gt) | (Lt, Eq) | (Lt, Gt) | (Le, Gt) | (Lt, Ge) => p_value > q_value,
+        (Eq, Ge) | (Le, Eq) | (Le, Ge) => p_value >= q_value,
+        _ => true,
     }
 }
 
-impl Iterator for Solver {
-    type Item = Predicate;
+fn solve_comparison_conjunction(
+    p: &Comparison,
+    p_args: &[Value],
+    q: &[Predicate],
+    q_args: &[Value],
+) -> bool {
+    q.iter().all(|q_conjunct| match q_conjunct {
+        Predicate::Comparison(q_comparison) => {
+            solve_comparison_comparison(p, p_args, q_comparison, q_args)
+        }
+        _ => true,
+    })
+}
 
-    fn next(&mut self) -> Option<Predicate> {
-        if self.queue.is_empty() {
-            if let Some((p, q)) = self.pq.take() {
-                let p_conjuncts = Solver::conjuncts(&p);
-                let q_conjuncts = Solver::conjuncts(&q);
+fn solve_comparison_disjunction(
+    p: &Comparison,
+    p_args: &[Value],
+    q: &[Predicate],
+    q_args: &[Value],
+) -> bool {
+    q.iter().any(|q_disjunct| match q_disjunct {
+        Predicate::Comparison(q_comparison) => {
+            solve_comparison_comparison(p, p_args, q_comparison, q_args)
+        }
+        Predicate::Connective(_q_connective @ Connective::Conjunction, q_operands) => {
+            solve_comparison_conjunction(p, p_args, q_operands, q_args)
+        }
+        _ => true,
+    })
+}
 
-                let p_column_sets = Solver::column_sets(p_conjuncts);
-                let q_column_sets = Solver::column_sets(q_conjuncts);
+fn solve_conjunction_comparison(
+    p: &[Predicate],
+    p_args: &[Value],
+    q: &Comparison,
+    q_args: &[Value],
+) -> bool {
+    solve_comparison_conjunction(q, q_args, p, p_args)
+}
 
-                for (p_conjunct, p_column_set) in p_conjuncts.iter().zip(&p_column_sets) {
-                    if let Predicate::Connective(..) = p_conjunct {
-                        let q_is = Solver::intersecting(&p_column_set, &q_column_sets);
+fn solve_conjunction_conjunction(
+    p: &[Predicate],
+    p_args: &[Value],
+    q: &[Predicate],
+    q_args: &[Value],
+) -> bool {
+    p.iter().all(|p_conjunct| match p_conjunct {
+        Predicate::Comparison(p_comparison) => {
+            solve_comparison_conjunction(p_comparison, p_args, q, q_args)
+        }
+        _ => true,
+    })
+}
 
-                        if q_is.len() == 1 {
-                            self.queue
-                                .push_back((p_conjunct.clone(), q_conjuncts[q_is[0]].clone()));
-                        } else if q_is.len() > 1 {
-                            self.queue.push_back((
-                                p_conjunct.clone(),
-                                Predicate::conjunction(
-                                    q_is.iter().map(|q_i| q_conjuncts[*q_i].clone()).collect(),
-                                ),
-                            ))
-                        }
-                    }
+fn solve_conjunction_disjunction(
+    p: &[Predicate],
+    p_args: &[Value],
+    q: &[Predicate],
+    q_args: &[Value],
+) -> bool {
+    q.iter().any(|q_disjunct| match q_disjunct {
+        Predicate::Comparison(q_comparison) => {
+            solve_conjunction_comparison(p, p_args, q_comparison, q_args)
+        }
+        Predicate::Connective(_q_connective @ Connective::Conjunction, q_operands) => {
+            solve_conjunction_conjunction(p, p_args, q_operands, q_args)
+        }
+        _ => true,
+    })
+}
+
+fn solve_disjunction_comparison(
+    p: &[Predicate],
+    p_args: &[Value],
+    q: &Comparison,
+    q_args: &[Value],
+) -> bool {
+    solve_comparison_disjunction(q, q_args, p, p_args)
+}
+
+fn solve_disjunction_conjunction(
+    p: &[Predicate],
+    p_args: &[Value],
+    q: &[Predicate],
+    q_args: &[Value],
+) -> bool {
+    solve_conjunction_disjunction(q, q_args, p, p_args)
+}
+
+fn solve_disjunction_disjunction(
+    p: &[Predicate],
+    p_args: &[Value],
+    q: &[Predicate],
+    q_args: &[Value],
+) -> bool {
+    p.iter().any(|p_disjunct| match p_disjunct {
+        Predicate::Comparison(p_comparison) => {
+            solve_comparison_disjunction(p_comparison, p_args, q, q_args)
+        }
+        Predicate::Connective(_p_connective @ Connective::Conjunction, p_operands) => {
+            solve_conjunction_disjunction(p_operands, p_args, q, q_args)
+        }
+        _ => true,
+    })
+}
+
+fn solve_normalized(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Value]) -> bool {
+    match (p, q) {
+        (Predicate::Comparison(p_comparison), Predicate::Comparison(q_comparison)) => {
+            solve_comparison_comparison(p_comparison, p_args, q_comparison, q_args)
+        }
+        (Predicate::Comparison(p_comparison), Predicate::Connective(q_connective, q_operands)) => {
+            match q_connective {
+                Connective::Conjunction => {
+                    solve_comparison_conjunction(p_comparison, p_args, q_operands, q_args)
                 }
-
-                for (q_conjunct, q_column_set) in q_conjuncts.iter().zip(&q_column_sets) {
-                    if let Predicate::Connective(..) = q_conjunct {
-                        let p_is = Solver::intersecting(q_column_set, &p_column_sets);
-
-                        if p_is.len() > 1 {
-                            self.queue.push_back((
-                                Predicate::conjunction(
-                                    p_is.iter().map(|p_i| p_conjuncts[*p_i].clone()).collect(),
-                                ),
-                                q_conjunct.clone(),
-                            ))
-                        }
-                    }
+                Connective::Disjunction => {
+                    solve_comparison_disjunction(p_comparison, p_args, q_operands, q_args)
                 }
             }
         }
-
-        while let Some((p, q)) = self.queue.pop_front() {
-            let mut r = match &p {
-                Predicate::Comparison(p_comparison, p_left, p_right) => match &q {
-                    Predicate::Comparison(q_comparison, q_left, q_right) => {
-                        Solver::solve_comparisons(
-                            *p_comparison,
-                            *p_left,
-                            *p_right,
-                            *q_comparison,
-                            *q_left,
-                            *q_right,
-                        )
-                    }
-                    Predicate::Connective(q_connective, q_operands) => match q_connective {
-                        Connective::Conjunction => {
-                            Solver::solve_conjunctions(slice::from_ref(&p), q_operands)
-                        }
-                        Connective::Disjunction => {
-                            Solver::solve_disjunctions(slice::from_ref(&p), q_operands)
-                        }
-                    },
-                },
-
-                Predicate::Connective(p_connective, p_operands) => match &q {
-                    Predicate::Comparison(..) => match p_connective {
-                        Connective::Conjunction => {
-                            Solver::solve_conjunctions(p_operands, slice::from_ref(&q))
-                        }
-                        Connective::Disjunction => {
-                            Solver::solve_disjunctions(p_operands, slice::from_ref(&q))
-                        }
-                    },
-
-                    Predicate::Connective(q_connective, q_operands) => {
-                        match (p_connective, q_connective) {
-                            (Connective::Conjunction, Connective::Conjunction) => {
-                                Solver::solve_conjunctions(p_operands, q_operands)
-                            }
-                            (Connective::Conjunction, Connective::Disjunction) => {
-                                Solver::solve_disjunctions(slice::from_ref(&p), q_operands)
-                            }
-                            (Connective::Disjunction, Connective::Conjunction) => {
-                                Solver::solve_disjunctions(p_operands, slice::from_ref(&q))
-                            }
-                            (Connective::Disjunction, Connective::Disjunction) => {
-                                Solver::solve_disjunctions(p_operands, q_operands)
-                            }
-                        }
-                    }
-                },
-            };
-
-            r.condense();
-            match r {
-                Predicate::Connective(_, operands) if operands.is_empty() => (),
-                _ => return Some(r),
+        (Predicate::Connective(p_connective, p_operands), Predicate::Comparison(q_comparison)) => {
+            match p_connective {
+                Connective::Conjunction => {
+                    solve_conjunction_comparison(p_operands, p_args, q_comparison, q_args)
+                }
+                Connective::Disjunction => {
+                    solve_disjunction_comparison(p_operands, p_args, q_comparison, q_args)
+                }
             }
         }
-
-        None
+        (
+            Predicate::Connective(p_connective, p_operands),
+            Predicate::Connective(q_connective, q_operands),
+        ) => match (p_connective, q_connective) {
+            (Connective::Conjunction, Connective::Conjunction) => {
+                solve_conjunction_conjunction(p_operands, p_args, q_operands, q_args)
+            }
+            (Connective::Conjunction, Connective::Disjunction) => {
+                solve_conjunction_disjunction(p_operands, p_args, q_operands, q_args)
+            }
+            (Connective::Disjunction, Connective::Conjunction) => {
+                solve_disjunction_conjunction(p_operands, p_args, q_operands, q_args)
+            }
+            (Connective::Disjunction, Connective::Disjunction) => {
+                solve_disjunction_disjunction(p_operands, p_args, q_operands, q_args)
+            }
+        },
     }
+}
+
+pub fn solve_dnf(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Value]) -> bool {
+    let mut p_dnf = Cow::Borrowed(p);
+    if !p_dnf.is_normalized() {
+        p_dnf.to_mut().normalize();
+    }
+
+    let mut q_dnf = Cow::Borrowed(q);
+    if !q_dnf.is_normalized() {
+        q_dnf.to_mut().normalize();
+    }
+
+    solve_normalized(&p_dnf, p_args, &q_dnf, q_args)
+}
+
+fn cluster<'a>(
+    p: &'a Predicate,
+    q: &'a Predicate,
+) -> impl Iterator<Item = (Predicate, Predicate)> + 'a {
+    let p_conjuncts = match p {
+        Predicate::Connective(_p_connective @ Connective::Conjunction, p_operands) => p_operands,
+        _ => slice::from_ref(p),
+    };
+
+    let q_conjuncts = match q {
+        Predicate::Connective(_q_connective @ Connective::Conjunction, q_operands) => q_operands,
+        _ => slice::from_ref(q),
+    };
+
+    let mut column_map = FnvHashMap::default();
+    let mut union_find = UnionFind::new(p_conjuncts.len() + q_conjuncts.len());
+
+    for (i, conjunct) in p_conjuncts.iter().chain(q_conjuncts).enumerate() {
+        for node in conjunct.preorder() {
+            if let Predicate::Comparison(comparison) = node {
+                let j = *column_map.entry(comparison.left).or_insert(i);
+
+                if i != j {
+                    union_find.union(i, j);
+                }
+            }
+        }
+    }
+
+    union_find.sets().into_iter().map(move |indices| {
+        let mut p_sub = vec![];
+        let mut q_sub = vec![];
+
+        for i in indices {
+            if i < p_conjuncts.len() {
+                p_sub.push(p_conjuncts[i].clone());
+            } else {
+                q_sub.push(q_conjuncts[i - p_conjuncts.len()].clone());
+            }
+        }
+
+        (Predicate::conjunction(p_sub), Predicate::conjunction(q_sub))
+    })
+}
+
+pub fn solve_clustered(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Value]) -> bool {
+    cluster(&p, &q)
+        .all(|(p_conjunct, q_conjunct)| solve_dnf(&p_conjunct, p_args, &q_conjunct, q_args))
 }

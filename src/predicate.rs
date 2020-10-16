@@ -1,41 +1,60 @@
 use std::fmt;
 use std::fmt::Write;
 
-#[derive(Clone, Copy)]
-pub enum Comparison {
-    Equal,
-    NotEqual,
-    Less,
-    LessEqual,
-    Greater,
-    GreaterEqual,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ComparisonOperator {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
 }
 
-impl fmt::Display for Comparison {
+impl fmt::Display for ComparisonOperator {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_char(match self {
-            Comparison::Equal => '=',
-            Comparison::NotEqual => '≠',
-            Comparison::Less => '<',
-            Comparison::LessEqual => '≤',
-            Comparison::Greater => '>',
-            Comparison::GreaterEqual => '≥',
+            ComparisonOperator::Eq => '=',
+            ComparisonOperator::Ne => '≠',
+            ComparisonOperator::Lt => '<',
+            ComparisonOperator::Le => '≤',
+            ComparisonOperator::Gt => '>',
+            ComparisonOperator::Ge => '≥',
         })
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Operand {
-    Column(usize),
-    Variable(usize),
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
+pub enum Value {
+    Boolean(bool),
+    Integer(usize),
+    String(String),
 }
 
-impl fmt::Display for Operand {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Operand::Column(id) => write!(f, "col({})", id),
-            Operand::Variable(id) => write!(f, "var({})", id),
+#[derive(Clone, Debug, PartialEq)]
+pub struct Comparison {
+    pub operator: ComparisonOperator,
+    pub left: usize,
+    pub right: usize,
+}
+
+impl Comparison {
+    pub fn new(operator: ComparisonOperator, left: usize, right: usize) -> Comparison {
+        Comparison {
+            operator,
+            left,
+            right,
         }
+    }
+}
+
+impl fmt::Display for Comparison {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "param_{} {} param_{}",
+            self.left, self.operator, self.right
+        )
     }
 }
 
@@ -45,15 +64,15 @@ pub enum Connective {
     Disjunction,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Predicate {
-    Comparison(Comparison, Operand, Operand),
+    Comparison(Comparison),
     Connective(Connective, Vec<Predicate>),
 }
 
 impl Predicate {
-    pub fn comparison(comparison: Comparison, left: Operand, right: Operand) -> Predicate {
-        Predicate::Comparison(comparison, left, right)
+    pub fn comparison(operator: ComparisonOperator, left: usize, right: usize) -> Predicate {
+        Predicate::Comparison(Comparison::new(operator, left, right))
     }
 
     pub fn conjunction(operands: Vec<Predicate>) -> Predicate {
@@ -108,7 +127,31 @@ impl Predicate {
         }
     }
 
-    pub fn disjunctive_normalize(&mut self) {
+    pub fn is_normalized(&self) -> bool {
+        match self {
+            Predicate::Comparison(..) => true,
+            Predicate::Connective(connective, operands) => match connective {
+                Connective::Conjunction => operands.iter().all(|operand| match operand {
+                    Predicate::Comparison(..) => true,
+                    _ => false,
+                }),
+                Connective::Disjunction => operands.iter().all(|operand| match operand {
+                    Predicate::Comparison(..) => true,
+                    Predicate::Connective(sub_connective, sub_operands) => match sub_connective {
+                        Connective::Conjunction => {
+                            sub_operands.iter().all(|sub_operand| match sub_operand {
+                                Predicate::Comparison(..) => true,
+                                _ => false,
+                            })
+                        }
+                        Connective::Disjunction => false,
+                    },
+                }),
+            },
+        }
+    }
+
+    pub fn normalize(&mut self) {
         let mut stack = vec![self as *mut Predicate];
 
         while let Some(node_ptr) = stack.pop() {
@@ -143,6 +186,8 @@ impl Predicate {
                 }
             }
         }
+
+        self.condense();
     }
 
     pub fn preorder(&self) -> PreorderIter {
@@ -167,8 +212,8 @@ impl Predicate {
         }
 
         match self {
-            Predicate::Comparison(comparison, left, right) => {
-                write!(f, "{} {} {}", left, comparison, right)?;
+            Predicate::Comparison(comparison) => {
+                write!(f, "{}", comparison)?;
             }
             Predicate::Connective(connective, operands) => {
                 if operands.is_empty() {
