@@ -1,328 +1,339 @@
+use crate::notification::Notification;
 use crate::predicate::{ComparisonOperator, Connective, Predicate, Value};
-use crate::request::{
-    AdHocClusteredSolvable, AdHocDnfSolvable, PreparedSolvable, Request, RequestBucket, Solvable,
-};
-use fnv::FnvHashMap;
-use std::collections::HashSet;
-use std::iter::FromIterator;
+use fnv::{FnvHashMap, FnvHashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 mod notification;
 pub mod predicate;
-mod request;
 mod solver;
 mod union_find;
 
-trait AdHocSolvable {
-    fn dibs_new(predicate: Predicate, arguments: Vec<Value>) -> Self;
-}
+const FILTER_MAGNITUDE: usize = 512;
 
-impl AdHocSolvable for AdHocDnfSolvable {
-    fn dibs_new(predicate: Predicate, arguments: Vec<Value>) -> Self {
-        AdHocDnfSolvable::new(predicate, arguments)
-    }
-}
-
-impl AdHocSolvable for AdHocClusteredSolvable {
-    fn dibs_new(predicate: Predicate, arguments: Vec<Value>) -> Self {
-        AdHocClusteredSolvable::new(predicate, arguments)
-    }
-}
-
-pub struct RequestGuard<'a, T>
-where
-    T: Solvable,
-{
-    id: usize,
-    bucket: &'a Mutex<RequestBucket<T>>,
-}
-
-impl<T> RequestGuard<'_, T>
-where
-    T: Solvable,
-{
-    fn new(id: usize, bucket: &Mutex<RequestBucket<T>>) -> RequestGuard<T> {
-        RequestGuard { id, bucket }
-    }
-}
-
-impl<T> Drop for RequestGuard<'_, T>
-where
-    T: Solvable,
-{
-    fn drop(&mut self) {
-        self.bucket.lock().unwrap().remove(&self.id);
-    }
-}
-
-struct DibsAdHoc<T>
-where
-    T: Solvable,
-{
-    requests: Vec<Mutex<RequestBucket<T>>>,
-    counter: AtomicUsize,
-}
-
-impl<T> DibsAdHoc<T>
-where
-    T: Solvable + AdHocSolvable,
-{
-    fn new(num_tables: usize) -> DibsAdHoc<T> {
-        DibsAdHoc {
-            requests: (0..num_tables)
-                .map(|_| Mutex::new(RequestBucket::new()))
-                .collect(),
-            counter: AtomicUsize::new(0),
-        }
-    }
-
-    fn acquire(
-        &self,
-        table: usize,
-        predicate: Predicate,
-        arguments: Vec<Value>,
-    ) -> RequestGuard<T> {
-        let bucket = self
-            .requests
-            .get(table)
-            .expect(&format!("unrecognized table id: {}", table));
-
-        let id = self.counter.fetch_add(1, Ordering::Relaxed);
-        let request = Request::new(T::dibs_new(predicate, arguments));
-        let notifications = bucket.lock().unwrap().insert(id, request);
-
-        for notification in &notifications {
-            notification.wait();
-        }
-
-        RequestGuard::new(id, bucket)
-    }
-}
-
-pub struct DibsAdHocDnf(DibsAdHoc<AdHocDnfSolvable>);
-
-impl DibsAdHocDnf {
-    pub fn new(num_tables: usize) -> DibsAdHocDnf {
-        DibsAdHocDnf(DibsAdHoc::new(num_tables))
-    }
-
-    pub fn acquire(
-        &self,
-        table: usize,
-        predicate: Predicate,
-        arguments: Vec<Value>,
-    ) -> RequestGuard<AdHocDnfSolvable> {
-        self.0.acquire(table, predicate, arguments)
-    }
-}
-
-pub struct DibsAdHocClustered(DibsAdHoc<AdHocClusteredSolvable>);
-
-impl DibsAdHocClustered {
-    pub fn new(num_tables: usize) -> DibsAdHocClustered {
-        DibsAdHocClustered(DibsAdHoc::new(num_tables))
-    }
-
-    pub fn acquire(
-        &self,
-        table: usize,
-        predicate: Predicate,
-        arguments: Vec<Value>,
-    ) -> RequestGuard<AdHocClusteredSolvable> {
-        self.0.acquire(table, predicate, arguments)
-    }
-}
-
+#[derive(Clone)]
 pub struct RequestTemplate {
     table: usize,
-    read_columns: HashSet<usize>,
-    write_columns: HashSet<usize>,
+    read_columns: FnvHashSet<usize>,
+    write_columns: FnvHashSet<usize>,
     predicate: Predicate,
 }
 
-struct PreparedRequest {
-    table: usize,
-    filter: Option<usize>,
-    conflicts: FnvHashMap<usize, Predicate>,
+pub enum RequestVariant {
+    AdHoc(RequestTemplate),
+    Prepared(usize),
 }
 
-fn find_conflicts(
+pub struct Request {
+    variant: RequestVariant,
+    arguments: Vec<Value>,
+    notification: Arc<Notification>,
+}
+
+impl Request {
+    pub fn new(variant: RequestVariant, arguments: Vec<Value>) -> Request {
+        Request {
+            variant,
+            arguments,
+            notification: Arc::new(Notification::new()),
+        }
+    }
+
+    pub fn complete(&self) {
+        self.notification.notify();
+    }
+}
+
+struct PreparedRequest {
+    template: RequestTemplate,
+    filter: Option<usize>,
+    conflicts: Vec<Option<Predicate>>,
+}
+
+struct TableRequestGroup {
+    filtered: Vec<Mutex<FnvHashMap<usize, Request>>>,
+    residual: Mutex<FnvHashMap<usize, Request>>,
+    residual_count: AtomicUsize,
+}
+
+pub struct RequestGuard<'a> {
+    id: usize,
+    bucket: &'a Mutex<FnvHashMap<usize, Request>>,
+    residual_count: Option<&'a AtomicUsize>,
+}
+
+impl<'a> Drop for RequestGuard<'a> {
+    fn drop(&mut self) {
+        self.bucket
+            .lock()
+            .unwrap()
+            .remove(&self.id)
+            .expect(&format!("no request with id {}", self.id))
+            .complete();
+
+        if let Some(residual_count) = self.residual_count {
+            residual_count.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
+fn potential_conflict(p: &RequestTemplate, q: &RequestTemplate) -> bool {
+    p.table == q.table
+        && (!p.read_columns.is_disjoint(&q.write_columns)
+            || !p.write_columns.is_disjoint(&q.read_columns)
+            || !p.write_columns.is_disjoint(&q.write_columns))
+}
+
+fn prepare_filter(template: &RequestTemplate, column: usize) -> Option<usize> {
+    match &template.predicate {
+        Predicate::Comparison(comparison)
+            if comparison.operator == ComparisonOperator::Eq && comparison.left == column =>
+        {
+            Some(comparison.right)
+        }
+        Predicate::Connective(_connective @ Connective::Conjunction, operands) => {
+            operands.iter().find_map(|operand| match operand {
+                Predicate::Comparison(comparison)
+                    if comparison.operator == ComparisonOperator::Eq
+                        && comparison.left == column =>
+                {
+                    Some(comparison.right)
+                }
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn prepare_conflicts(
     template: &RequestTemplate,
     other_templates: &[RequestTemplate],
-) -> FnvHashMap<usize, Predicate> {
-    FnvHashMap::from_iter(
-        other_templates
+) -> Vec<Option<Predicate>> {
+    other_templates
+        .iter()
+        .map(|other_template| {
+            if potential_conflict(template, other_template) {
+                Some(solver::prepare(
+                    &template.predicate,
+                    &other_template.predicate,
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub struct Dibs {
+    prepared_requests: Vec<PreparedRequest>,
+    inflight_requests: Vec<TableRequestGroup>,
+    request_count: AtomicUsize,
+}
+
+impl Dibs {
+    pub fn new(filters: &[Option<usize>], templates: &[RequestTemplate]) -> Dibs {
+        let prepared_requests = templates
             .iter()
-            .enumerate()
-            .filter_map(|(i, other_template)| {
-                if template.table == other_template.table
-                    && (!template
-                        .read_columns
-                        .is_disjoint(&other_template.write_columns)
-                        || !template
-                            .write_columns
-                            .is_disjoint(&other_template.read_columns)
-                        || !template
-                            .write_columns
-                            .is_disjoint(&other_template.write_columns))
+            .map(|template| PreparedRequest {
+                template: template.clone(),
+                filter: filters[template.table].and_then(|column| prepare_filter(template, column)),
+                conflicts: prepare_conflicts(template, templates),
+            })
+            .collect();
+
+        let inflight_requests = (0..filters.len())
+            .map(|_| TableRequestGroup {
+                filtered: (0..FILTER_MAGNITUDE)
+                    .map(|_| Mutex::new(FnvHashMap::default()))
+                    .collect(),
+                residual: Mutex::new(FnvHashMap::default()),
+                residual_count: AtomicUsize::new(0),
+            })
+            .collect();
+
+        Dibs {
+            prepared_requests,
+            inflight_requests,
+            request_count: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn acquire(&self, request: Request) -> RequestGuard {
+        let request_id = self.request_count.fetch_add(1, Ordering::Relaxed);
+        let mut notifications = vec![];
+
+        let request_guard = match &request.variant {
+            RequestVariant::AdHoc(template) => {
+                let table_request_group = &self.inflight_requests[template.table];
+
+                let mut guards = Vec::with_capacity(table_request_group.filtered.len());
+
+                for bucket in &table_request_group.filtered {
+                    let bucket_guard = bucket.lock().unwrap();
+
+                    notifications.extend(self.solve_ad_hoc(
+                        template,
+                        &request.arguments,
+                        bucket_guard.values(),
+                    ));
+
+                    guards.push(bucket_guard);
+                }
+
+                let mut residual_guard = table_request_group.residual.lock().unwrap();
+
+                notifications.extend(self.solve_ad_hoc(
+                    template,
+                    &request.arguments,
+                    residual_guard.values(),
+                ));
+
+                table_request_group
+                    .residual_count
+                    .fetch_add(1, Ordering::Release);
+
+                residual_guard.insert(request_id, request);
+
+                RequestGuard {
+                    id: request_id,
+                    bucket: &table_request_group.residual,
+                    residual_count: Some(&table_request_group.residual_count),
+                }
+            }
+
+            RequestVariant::Prepared(id) => {
+                let prepared_request = &self.prepared_requests[*id];
+                let table_request_group = &self.inflight_requests[prepared_request.template.table];
+
+                if let Some(filter) = prepared_request.filter {
+                    let bucket = &table_request_group.filtered[filter];
+                    let mut bucket_guard = bucket.lock().unwrap();
+
+                    notifications.extend(self.solve_prepared(
+                        *id,
+                        &request.arguments,
+                        bucket_guard.values(),
+                    ));
+
+                    if table_request_group.residual_count.load(Ordering::Acquire) > 0 {
+                        notifications.extend(self.solve_prepared(
+                            *id,
+                            &request.arguments,
+                            table_request_group.residual.lock().unwrap().values(),
+                        ));
+                    }
+
+                    bucket_guard.insert(*id, request);
+
+                    RequestGuard {
+                        id: request_id,
+                        bucket,
+                        residual_count: None,
+                    }
+                } else {
+                    let mut guards = Vec::with_capacity(table_request_group.filtered.len());
+
+                    for bucket in &table_request_group.filtered {
+                        let bucket_guard = bucket.lock().unwrap();
+
+                        notifications.extend(self.solve_prepared(
+                            *id,
+                            &request.arguments,
+                            bucket_guard.values(),
+                        ));
+
+                        guards.push(bucket_guard);
+                    }
+
+                    let mut residual_guard = table_request_group.residual.lock().unwrap();
+
+                    notifications.extend(self.solve_prepared(
+                        *id,
+                        &request.arguments,
+                        residual_guard.values(),
+                    ));
+
+                    table_request_group
+                        .residual_count
+                        .fetch_add(1, Ordering::Release);
+
+                    residual_guard.insert(request_id, request);
+
+                    RequestGuard {
+                        id: request_id,
+                        bucket: &table_request_group.residual,
+                        residual_count: Some(&table_request_group.residual_count),
+                    }
+                }
+            }
+        };
+
+        for notification in &notifications {
+            notification.wait();
+        }
+
+        request_guard
+    }
+
+    fn solve_ad_hoc<'a>(
+        &'a self,
+        template: &'a RequestTemplate,
+        arguments: &'a [Value],
+        other_requests: impl Iterator<Item = &'a Request> + 'a,
+    ) -> impl Iterator<Item = Arc<Notification>> + 'a {
+        other_requests.filter_map(move |other_request| {
+            let other_template = match &other_request.variant {
+                RequestVariant::AdHoc(t) => t,
+                RequestVariant::Prepared(id) => &self.prepared_requests[*id].template,
+            };
+
+            if potential_conflict(template, other_template)
+                && solver::solve_clustered(
+                    &template.predicate,
+                    arguments,
+                    &other_template.predicate,
+                    &other_request.arguments,
+                )
+            {
+                Some(other_request.notification.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn solve_prepared<'a>(
+        &'a self,
+        id: usize,
+        arguments: &'a [Value],
+        other_requests: impl Iterator<Item = &'a Request> + 'a,
+    ) -> impl Iterator<Item = Arc<Notification>> + 'a {
+        other_requests.filter_map(move |other_request| match &other_request.variant {
+            RequestVariant::AdHoc(other_template) => {
+                if potential_conflict(&self.prepared_requests[id].template, other_template)
+                    && solver::solve_clustered(
+                        &self.prepared_requests[id].template.predicate,
+                        arguments,
+                        &other_template.predicate,
+                        &other_request.arguments,
+                    )
                 {
-                    Some((
-                        i,
-                        solver::prepare(&template.predicate, &other_template.predicate),
-                    ))
+                    Some(other_request.notification.clone())
                 } else {
                     None
                 }
-            }),
-    )
-}
-
-pub struct DibsPreparedUnfiltered<'a> {
-    prepared_requests: Vec<PreparedRequest>,
-    requests: Vec<Mutex<RequestBucket<PreparedSolvable<'a>>>>,
-    counter: AtomicUsize,
-}
-
-impl<'a> DibsPreparedUnfiltered<'a> {
-    pub fn new(num_tables: usize, templates: &[RequestTemplate]) -> DibsPreparedUnfiltered<'a> {
-        DibsPreparedUnfiltered {
-            prepared_requests: templates
-                .iter()
-                .map(|template| PreparedRequest {
-                    table: template.table,
-                    filter: None,
-                    conflicts: find_conflicts(template, templates),
-                })
-                .collect(),
-            requests: (0..num_tables)
-                .map(|_| Mutex::new(RequestBucket::new()))
-                .collect(),
-            counter: AtomicUsize::new(0),
-        }
-    }
-
-    pub fn acquire(
-        &'a self,
-        id: usize,
-        arguments: Vec<Value>,
-    ) -> RequestGuard<PreparedSolvable<'a>> {
-        let prepared_request = self
-            .prepared_requests
-            .get(id)
-            .expect(&format!("unrecognized request id: {}", id));
-
-        let bucket = self.requests.get(prepared_request.table).expect(&format!(
-            "unrecognized table id: {}",
-            prepared_request.table
-        ));
-
-        let request_id = self.counter.fetch_add(1, Ordering::Relaxed);
-        let request = Request::new(PreparedSolvable::new(
-            request_id,
-            &prepared_request.conflicts,
-            arguments,
-        ));
-        let notifications = bucket.lock().unwrap().insert(id, request);
-
-        for notification in &notifications {
-            notification.wait();
-        }
-
-        RequestGuard::new(id, bucket)
-    }
-}
-
-struct RequestFilter<'a> {
-    filtered: Vec<Mutex<RequestBucket<PreparedSolvable<'a>>>>,
-    residual: Mutex<RequestBucket<PreparedSolvable<'a>>>,
-}
-
-impl<'a> RequestFilter<'a> {
-    fn new() -> RequestFilter<'a> {
-        RequestFilter {
-            filtered: (0..512).map(|_| Mutex::new(RequestBucket::new())).collect(),
-            residual: Mutex::new(RequestBucket::new()),
-        }
-    }
-}
-
-pub struct DibsPreparedFiltered<'a> {
-    prepared_requests: Vec<PreparedRequest>,
-    requests: Vec<RequestFilter<'a>>,
-    counter: AtomicUsize,
-}
-
-impl<'a> DibsPreparedFiltered<'a> {
-    pub fn new(filters: Vec<usize>, templates: &[RequestTemplate]) -> DibsPreparedFiltered<'a> {
-        DibsPreparedFiltered {
-            prepared_requests: templates
-                .iter()
-                .map(|template| PreparedRequest {
-                    table: template.table,
-                    filter: match &template.predicate {
-                        Predicate::Comparison(comparison)
-                            if comparison.operator == ComparisonOperator::Eq
-                                && comparison.left == filters[template.table] =>
-                        {
-                            Some(comparison.right)
-                        }
-                        Predicate::Connective(_connective @ Connective::Conjunction, operands) => {
-                            operands.iter().find_map(|operand| match operand {
-                                Predicate::Comparison(comparison)
-                                    if comparison.operator == ComparisonOperator::Eq
-                                        && comparison.left == filters[template.table] =>
-                                {
-                                    Some(comparison.right)
-                                }
-                                _ => None,
-                            })
-                        }
-                        _ => None,
-                    },
-                    conflicts: find_conflicts(template, templates),
-                })
-                .collect(),
-            requests: (0..filters.len()).map(|_| RequestFilter::new()).collect(),
-            counter: AtomicUsize::new(0),
-        }
-    }
-
-    pub fn acquire(
-        &'a self,
-        id: usize,
-        arguments: Vec<Value>,
-    ) -> RequestGuard<PreparedSolvable<'a>> {
-        let prepared_request = self
-            .prepared_requests
-            .get(id)
-            .expect(&format!("unrecognized request id: {}", id));
-
-        let bucket = match &prepared_request.filter {
-            Some(filter) => {
-                let hash = match &arguments[*filter] {
-                    Value::Integer(i) => *i % 512,
-                    _ => panic!(),
-                };
-
-                &self.requests[prepared_request.table].filtered[hash]
             }
-            None => &self.requests[prepared_request.table].residual,
-        };
-
-        let request_id = self.counter.fetch_add(1, Ordering::Relaxed);
-        let request = Request::new(PreparedSolvable::new(
-            request_id,
-            &prepared_request.conflicts,
-            arguments,
-        ));
-        let notifications = bucket.lock().unwrap().insert(id, request);
-
-        for notification in &notifications {
-            notification.wait();
-        }
-
-        RequestGuard::new(id, bucket)
+            RequestVariant::Prepared(other_id) => self.prepared_requests[id].conflicts[*other_id]
+                .as_ref()
+                .and_then(|conflict| {
+                    if solver::evaluate(conflict, &arguments, &other_request.arguments) {
+                        Some(other_request.notification.clone())
+                    } else {
+                        None
+                    }
+                }),
+        })
     }
 }
 
