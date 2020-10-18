@@ -91,6 +91,18 @@ impl Predicate {
         }
     }
 
+    // pub fn is_boolean(&self, v: bool) -> bool {
+    //     match self {
+    //         Predicate::Connective(connective, operands) => match (v, connective) {
+    //             (true, Connective::Conjunction) | (false, Connective::Disjunction) => {
+    //                 operands.is_empty()
+    //             }
+    //             _ => false,
+    //         },
+    //         _ => false,
+    //     }
+    // }
+
     pub fn condense(&mut self) {
         let mut stack = vec![self as *mut Predicate];
 
@@ -118,6 +130,7 @@ impl Predicate {
 
                 if operands.len() == 1 {
                     *node = operands.pop().unwrap();
+                    stack.push(node as *mut Predicate);
                 } else {
                     for operand in operands {
                         stack.push(operand as *mut Predicate);

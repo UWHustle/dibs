@@ -4,6 +4,51 @@ use fnv::FnvHashMap;
 use std::borrow::Cow;
 use std::{mem, slice};
 
+fn cluster<'a>(
+    p: &'a Predicate,
+    q: &'a Predicate,
+) -> impl Iterator<Item = (Predicate, Predicate)> + 'a {
+    let p_conjuncts = match p {
+        Predicate::Connective(_p_connective @ Connective::Conjunction, p_operands) => p_operands,
+        _ => slice::from_ref(p),
+    };
+
+    let q_conjuncts = match q {
+        Predicate::Connective(_q_connective @ Connective::Conjunction, q_operands) => q_operands,
+        _ => slice::from_ref(q),
+    };
+
+    let mut column_map = FnvHashMap::default();
+    let mut union_find = UnionFind::new(p_conjuncts.len() + q_conjuncts.len());
+
+    for (i, conjunct) in p_conjuncts.iter().chain(q_conjuncts).enumerate() {
+        for node in conjunct.preorder() {
+            if let Predicate::Comparison(comparison) = node {
+                let j = *column_map.entry(comparison.left).or_insert(i);
+
+                if i != j {
+                    union_find.union(i, j);
+                }
+            }
+        }
+    }
+
+    union_find.sets().into_iter().map(move |indices| {
+        let mut p_sub = vec![];
+        let mut q_sub = vec![];
+
+        for i in indices {
+            if i < p_conjuncts.len() {
+                p_sub.push(p_conjuncts[i].clone());
+            } else {
+                q_sub.push(q_conjuncts[i - p_conjuncts.len()].clone());
+            }
+        }
+
+        (Predicate::conjunction(p_sub), Predicate::conjunction(q_sub))
+    })
+}
+
 fn prepare_comparison_comparison(p: &Comparison, q: &Comparison, swap: bool) -> Predicate {
     use crate::predicate::ComparisonOperator::*;
 
@@ -257,8 +302,101 @@ fn solve_disjunction_disjunction(
     })
 }
 
-fn solve_normalized(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Value]) -> bool {
-    match (p, q) {
+pub fn prepare(p: &Predicate, q: &Predicate) -> Predicate {
+    let mut r = Predicate::conjunction(
+        cluster(p, q)
+            .map(|(mut p_conjunct, mut q_conjunct)| {
+                p_conjunct.normalize();
+                q_conjunct.normalize();
+
+                match (&p_conjunct, &q_conjunct) {
+                    (Predicate::Comparison(p_comparison), Predicate::Comparison(q_comparison)) => {
+                        prepare_comparison_comparison(p_comparison, q_comparison, false)
+                    }
+                    (
+                        Predicate::Comparison(p_comparison),
+                        Predicate::Connective(q_connective, q_operands),
+                    ) => match q_connective {
+                        Connective::Conjunction => {
+                            prepare_comparison_conjunction(p_comparison, q_operands, false)
+                        }
+                        Connective::Disjunction => {
+                            prepare_comparison_disjunction(p_comparison, q_operands, false)
+                        }
+                    },
+                    (
+                        Predicate::Connective(p_connective, p_operands),
+                        Predicate::Comparison(q_comparison),
+                    ) => match p_connective {
+                        Connective::Conjunction => {
+                            prepare_conjunction_comparison(p_operands, q_comparison, false)
+                        }
+                        Connective::Disjunction => {
+                            prepare_disjunction_comparison(p_operands, q_comparison, false)
+                        }
+                    },
+                    (
+                        Predicate::Connective(p_connective, p_operands),
+                        Predicate::Connective(q_connective, q_operands),
+                    ) => match (p_connective, q_connective) {
+                        (Connective::Conjunction, Connective::Conjunction) => {
+                            prepare_conjunction_conjunction(p_operands, q_operands, false)
+                        }
+                        (Connective::Conjunction, Connective::Disjunction) => {
+                            prepare_conjunction_disjunction(p_operands, q_operands, false)
+                        }
+                        (Connective::Disjunction, Connective::Conjunction) => {
+                            prepare_disjunction_conjunction(p_operands, q_operands, false)
+                        }
+                        (Connective::Disjunction, Connective::Disjunction) => {
+                            prepare_disjunction_disjunction(p_operands, q_operands, false)
+                        }
+                    },
+                }
+            })
+            .collect(),
+    );
+
+    r.condense();
+
+    r
+}
+
+pub fn evaluate(conflict: &Predicate, p_args: &[Value], q_args: &[Value]) -> bool {
+    use crate::predicate::ComparisonOperator::*;
+
+    match conflict {
+        Predicate::Comparison(comparison) => match comparison.operator {
+            Eq => p_args[comparison.left] == q_args[comparison.right],
+            Ne => p_args[comparison.left] != q_args[comparison.right],
+            Lt => p_args[comparison.left] < q_args[comparison.right],
+            Le => p_args[comparison.left] <= q_args[comparison.right],
+            Gt => p_args[comparison.left] > q_args[comparison.right],
+            Ge => p_args[comparison.left] >= q_args[comparison.right],
+        },
+        Predicate::Connective(connective, operands) => match connective {
+            Connective::Conjunction => operands
+                .iter()
+                .all(|operand| evaluate(operand, p_args, q_args)),
+            Connective::Disjunction => operands
+                .iter()
+                .any(|operand| evaluate(operand, p_args, q_args)),
+        },
+    }
+}
+
+pub fn solve_dnf(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Value]) -> bool {
+    let mut p_dnf = Cow::Borrowed(p);
+    if !p_dnf.is_normalized() {
+        p_dnf.to_mut().normalize();
+    }
+
+    let mut q_dnf = Cow::Borrowed(q);
+    if !q_dnf.is_normalized() {
+        q_dnf.to_mut().normalize();
+    }
+
+    match (&*p_dnf, &*q_dnf) {
         (Predicate::Comparison(p_comparison), Predicate::Comparison(q_comparison)) => {
             solve_comparison_comparison(p_comparison, p_args, q_comparison, q_args)
         }
@@ -300,65 +438,6 @@ fn solve_normalized(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Va
             }
         },
     }
-}
-
-pub fn solve_dnf(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Value]) -> bool {
-    let mut p_dnf = Cow::Borrowed(p);
-    if !p_dnf.is_normalized() {
-        p_dnf.to_mut().normalize();
-    }
-
-    let mut q_dnf = Cow::Borrowed(q);
-    if !q_dnf.is_normalized() {
-        q_dnf.to_mut().normalize();
-    }
-
-    solve_normalized(&p_dnf, p_args, &q_dnf, q_args)
-}
-
-fn cluster<'a>(
-    p: &'a Predicate,
-    q: &'a Predicate,
-) -> impl Iterator<Item = (Predicate, Predicate)> + 'a {
-    let p_conjuncts = match p {
-        Predicate::Connective(_p_connective @ Connective::Conjunction, p_operands) => p_operands,
-        _ => slice::from_ref(p),
-    };
-
-    let q_conjuncts = match q {
-        Predicate::Connective(_q_connective @ Connective::Conjunction, q_operands) => q_operands,
-        _ => slice::from_ref(q),
-    };
-
-    let mut column_map = FnvHashMap::default();
-    let mut union_find = UnionFind::new(p_conjuncts.len() + q_conjuncts.len());
-
-    for (i, conjunct) in p_conjuncts.iter().chain(q_conjuncts).enumerate() {
-        for node in conjunct.preorder() {
-            if let Predicate::Comparison(comparison) = node {
-                let j = *column_map.entry(comparison.left).or_insert(i);
-
-                if i != j {
-                    union_find.union(i, j);
-                }
-            }
-        }
-    }
-
-    union_find.sets().into_iter().map(move |indices| {
-        let mut p_sub = vec![];
-        let mut q_sub = vec![];
-
-        for i in indices {
-            if i < p_conjuncts.len() {
-                p_sub.push(p_conjuncts[i].clone());
-            } else {
-                q_sub.push(q_conjuncts[i - p_conjuncts.len()].clone());
-            }
-        }
-
-        (Predicate::conjunction(p_sub), Predicate::conjunction(q_sub))
-    })
 }
 
 pub fn solve_clustered(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Value]) -> bool {

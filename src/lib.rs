@@ -1,144 +1,210 @@
-use crate::notification::Notification;
 use crate::predicate::{Predicate, Value};
+use crate::request::{
+    AdHocClusteredSolvable, AdHocDnfSolvable, PreparedSolvable, Request, RequestBucket, Solvable,
+};
 use fnv::FnvHashMap;
+use std::collections::HashSet;
 use std::iter::FromIterator;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 mod notification;
 pub mod predicate;
+mod request;
 mod solver;
 mod union_find;
 
-struct AdHocRequest {
-    predicate: Predicate,
-    arguments: Vec<Value>,
-    completed: Arc<Notification>,
+trait AdHocSolvable {
+    fn dibs_new(predicate: Predicate, arguments: Vec<Value>) -> Self;
 }
 
-impl AdHocRequest {
-    fn new(predicate: Predicate, arguments: Vec<Value>) -> AdHocRequest {
-        AdHocRequest {
-            predicate,
-            arguments,
-            completed: Arc::new(Notification::new()),
-        }
+impl AdHocSolvable for AdHocDnfSolvable {
+    fn dibs_new(predicate: Predicate, arguments: Vec<Value>) -> Self {
+        AdHocDnfSolvable::new(predicate, arguments)
     }
 }
 
-struct RequestBucket {
-    requests: FnvHashMap<usize, AdHocRequest>,
-}
-
-impl RequestBucket {
-    fn new() -> RequestBucket {
-        RequestBucket {
-            requests: FnvHashMap::default(),
-        }
-    }
-
-    fn insert(
-        &mut self,
-        id: usize,
-        request: AdHocRequest,
-        cluster: bool,
-    ) -> Vec<Arc<Notification>> {
-        let notifications = self
-            .requests
-            .iter()
-            .filter(|&(other_id, other_request)| {
-                assert_ne!(id, *other_id, "two requests with the same id {}", id);
-
-                if cluster {
-                    solver::solve_clustered(
-                        &request.predicate,
-                        &request.arguments,
-                        &other_request.predicate,
-                        &other_request.arguments,
-                    )
-                } else {
-                    solver::solve_dnf(
-                        &request.predicate,
-                        &request.arguments,
-                        &other_request.predicate,
-                        &other_request.arguments,
-                    )
-                }
-            })
-            .map(|(_, other_request)| other_request.completed.clone())
-            .collect();
-
-        self.requests.insert(id, request);
-
-        notifications
-    }
-
-    fn remove(&mut self, id: &usize) {
-        self.requests
-            .remove(id)
-            .expect(&format!("no request with id {}", id))
-            .completed
-            .notify();
+impl AdHocSolvable for AdHocClusteredSolvable {
+    fn dibs_new(predicate: Predicate, arguments: Vec<Value>) -> Self {
+        AdHocClusteredSolvable::new(predicate, arguments)
     }
 }
 
-pub struct AdHocRequestGuard<'a> {
+pub struct RequestGuard<'a, T>
+where
+    T: Solvable,
+{
     id: usize,
-    bucket: &'a Mutex<RequestBucket>,
+    bucket: &'a Mutex<RequestBucket<T>>,
 }
 
-impl AdHocRequestGuard<'_> {
-    fn new(id: usize, bucket: &Mutex<RequestBucket>) -> AdHocRequestGuard {
-        AdHocRequestGuard { id, bucket }
+impl<T> RequestGuard<'_, T>
+where
+    T: Solvable,
+{
+    fn new(id: usize, bucket: &Mutex<RequestBucket<T>>) -> RequestGuard<T> {
+        RequestGuard { id, bucket }
     }
 }
 
-impl Drop for AdHocRequestGuard<'_> {
+impl<T> Drop for RequestGuard<'_, T>
+where
+    T: Solvable,
+{
     fn drop(&mut self) {
         self.bucket.lock().unwrap().remove(&self.id);
     }
 }
 
-pub struct Dibs {
-    ad_hoc_requests: FnvHashMap<usize, Mutex<RequestBucket>>,
+struct DibsAdHoc<T>
+where
+    T: Solvable,
+{
+    requests: Vec<Mutex<RequestBucket<T>>>,
     counter: AtomicUsize,
 }
 
-impl Dibs {
-    pub fn new(tables: &[usize]) -> Dibs {
-        Dibs {
-            ad_hoc_requests: FnvHashMap::from_iter(
-                tables
-                    .iter()
-                    .map(|&table| (table, Mutex::new(RequestBucket::new()))),
-            ),
+impl<T> DibsAdHoc<T>
+where
+    T: Solvable + AdHocSolvable,
+{
+    fn new(num_tables: usize) -> DibsAdHoc<T> {
+        DibsAdHoc {
+            requests: (0..num_tables)
+                .map(|_| Mutex::new(RequestBucket::new()))
+                .collect(),
             counter: AtomicUsize::new(0),
         }
     }
-}
 
-impl Dibs {
-    pub fn ad_hoc_acquire(
+    fn acquire(
         &self,
         table: usize,
         predicate: Predicate,
         arguments: Vec<Value>,
-    ) -> Result<AdHocRequestGuard, String> {
+    ) -> RequestGuard<T> {
         let bucket = self
-            .ad_hoc_requests
-            .get(&table)
-            .ok_or(format!("unrecognized table id: {}", table))?;
+            .requests
+            .get(table)
+            .expect(&format!("unrecognized table id: {}", table));
 
         let id = self.counter.fetch_add(1, Ordering::Relaxed);
-        let request = AdHocRequest::new(predicate, arguments);
-
-        let notifications = bucket.lock().unwrap().insert(id, request, false);
+        let request = Request::new(T::dibs_new(predicate, arguments));
+        let notifications = bucket.lock().unwrap().insert(id, request);
 
         for notification in &notifications {
             notification.wait();
         }
 
-        Ok(AdHocRequestGuard::new(id, bucket))
+        RequestGuard::new(id, bucket)
+    }
+}
+
+pub struct DibsAdHocDnf(DibsAdHoc<AdHocDnfSolvable>);
+
+impl DibsAdHocDnf {
+    pub fn new(num_tables: usize) -> DibsAdHocDnf {
+        DibsAdHocDnf(DibsAdHoc::new(num_tables))
+    }
+
+    pub fn acquire(
+        &self,
+        table: usize,
+        predicate: Predicate,
+        arguments: Vec<Value>,
+    ) -> RequestGuard<AdHocDnfSolvable> {
+        self.0.acquire(table, predicate, arguments)
+    }
+}
+
+pub struct DibsAdHocClustered(DibsAdHoc<AdHocClusteredSolvable>);
+
+impl DibsAdHocClustered {
+    pub fn new(num_tables: usize) -> DibsAdHocClustered {
+        DibsAdHocClustered(DibsAdHoc::new(num_tables))
+    }
+
+    pub fn acquire(
+        &self,
+        table: usize,
+        predicate: Predicate,
+        arguments: Vec<Value>,
+    ) -> RequestGuard<AdHocClusteredSolvable> {
+        self.0.acquire(table, predicate, arguments)
+    }
+}
+
+pub struct PreparedRequest {
+    table: usize,
+    read_columns: HashSet<usize>,
+    write_columns: HashSet<usize>,
+    predicate: Predicate,
+}
+
+pub struct DibsPreparedUnfiltered<'a> {
+    requests: Vec<Mutex<RequestBucket<PreparedSolvable<'a>>>>,
+    counter: AtomicUsize,
+    conflicts: Vec<(usize, FnvHashMap<usize, Predicate>)>,
+}
+
+impl<'a> DibsPreparedUnfiltered<'a> {
+    pub fn new(
+        num_tables: usize,
+        prepared_requests: &[PreparedRequest],
+    ) -> DibsPreparedUnfiltered<'a> {
+        DibsPreparedUnfiltered {
+            requests: (0..num_tables)
+                .map(|_| Mutex::new(RequestBucket::new()))
+                .collect(),
+            counter: AtomicUsize::new(0),
+            conflicts: prepared_requests
+                .iter()
+                .map(|left| {
+                    (
+                        left.table,
+                        FnvHashMap::from_iter(prepared_requests.iter().enumerate().filter_map(
+                            |(j, right)| {
+                                if left.table == right.table
+                                    && (!left.read_columns.is_disjoint(&right.write_columns)
+                                        || !left.write_columns.is_disjoint(&right.read_columns)
+                                        || !left.write_columns.is_disjoint(&right.write_columns))
+                                {
+                                    Some((j, solver::prepare(&left.predicate, &right.predicate)))
+                                } else {
+                                    None
+                                }
+                            },
+                        )),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    pub fn acquire(
+        &'a self,
+        id: usize,
+        arguments: Vec<Value>,
+    ) -> RequestGuard<PreparedSolvable<'a>> {
+        let (table, conflicts) = &self
+            .conflicts
+            .get(id)
+            .expect(&format!("unrecognized request id: {}", id));
+
+        let bucket = self
+            .requests
+            .get(*table)
+            .expect(&format!("unrecognized table id: {}", table));
+
+        let request_id = self.counter.fetch_add(1, Ordering::Relaxed);
+        let request = Request::new(PreparedSolvable::new(request_id, conflicts, arguments));
+        let notifications = bucket.lock().unwrap().insert(id, request);
+
+        for notification in &notifications {
+            notification.wait();
+        }
+
+        RequestGuard::new(id, bucket)
     }
 }
 
@@ -156,9 +222,9 @@ mod tests {
 
         let p_args = &[Value::Integer(0), Value::Integer(1)];
 
-        let q = Predicate::conjunction(vec![
-            Predicate::comparison(ComparisonOperator::Eq, 0, 0),
-            Predicate::comparison(ComparisonOperator::Eq, 1, 1),
+        let q = Predicate::disjunction(vec![
+            Predicate::comparison(ComparisonOperator::Eq, 0, 2),
+            Predicate::comparison(ComparisonOperator::Eq, 1, 3),
         ]);
 
         let q_args = &[Value::Integer(0), Value::Integer(1)];
@@ -167,6 +233,6 @@ mod tests {
 
         println!("Predicate Q:\n{}\n", q);
 
-        println!("{:?}", solver::solve_clustered(&p, p_args, &q, q_args));
+        println!("{}", solver::prepare(&p, &q));
     }
 }
