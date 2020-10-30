@@ -57,20 +57,3 @@ impl UnionFind {
         sparse_sets.into_iter().filter(|s| !s.is_empty()).collect()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::union_find::UnionFind;
-
-    #[test]
-    fn hello() {
-        let mut uf = UnionFind::new(5);
-        uf.union(0, 1);
-        uf.union(3, 4);
-        uf.union(0, 4);
-        //
-        // println!("{:#?}", uf);
-        //
-        // println!("{:?}", uf.sets());
-    }
-}

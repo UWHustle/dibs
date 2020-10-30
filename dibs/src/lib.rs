@@ -1,8 +1,10 @@
 use crate::notification::Notification;
 use crate::predicate::{ComparisonOperator, Connective, Predicate, Value};
-use fnv::{FnvHashMap, FnvHashSet};
+use fnv::FnvHashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 mod notification;
 pub mod predicate;
@@ -14,9 +16,25 @@ const FILTER_MAGNITUDE: usize = 512;
 #[derive(Clone)]
 pub struct RequestTemplate {
     table: usize,
-    read_columns: FnvHashSet<usize>,
-    write_columns: FnvHashSet<usize>,
+    read_columns: HashSet<usize>,
+    write_columns: HashSet<usize>,
     predicate: Predicate,
+}
+
+impl RequestTemplate {
+    pub fn new(
+        table: usize,
+        read_columns: HashSet<usize>,
+        write_columns: HashSet<usize>,
+        predicate: Predicate,
+    ) -> RequestTemplate {
+        RequestTemplate {
+            table,
+            read_columns,
+            write_columns,
+            predicate,
+        }
+    }
 }
 
 pub enum RequestVariant {
@@ -25,14 +43,16 @@ pub enum RequestVariant {
 }
 
 pub struct Request {
+    transaction_id: usize,
     variant: RequestVariant,
     arguments: Vec<Value>,
     notification: Arc<Notification>,
 }
 
 impl Request {
-    pub fn new(variant: RequestVariant, arguments: Vec<Value>) -> Request {
+    pub fn new(transaction_id: usize, variant: RequestVariant, arguments: Vec<Value>) -> Request {
         Request {
+            transaction_id,
             variant,
             arguments,
             notification: Arc::new(Notification::new()),
@@ -159,7 +179,7 @@ impl Dibs {
         }
     }
 
-    pub fn acquire(&self, request: Request) -> RequestGuard {
+    pub fn acquire(&self, request: Request, timeout: Duration) -> Option<RequestGuard> {
         let request_id = self.request_count.fetch_add(1, Ordering::Relaxed);
         let mut notifications = vec![];
 
@@ -173,6 +193,7 @@ impl Dibs {
                     let bucket_guard = bucket.lock().unwrap();
 
                     notifications.extend(self.solve_ad_hoc(
+                        request.transaction_id,
                         template,
                         &request.arguments,
                         bucket_guard.values(),
@@ -184,6 +205,7 @@ impl Dibs {
                 let mut residual_guard = table_request_group.residual.lock().unwrap();
 
                 notifications.extend(self.solve_ad_hoc(
+                    request.transaction_id,
                     template,
                     &request.arguments,
                     residual_guard.values(),
@@ -202,8 +224,8 @@ impl Dibs {
                 }
             }
 
-            RequestVariant::Prepared(id) => {
-                let prepared_request = &self.prepared_requests[*id];
+            &RequestVariant::Prepared(prepared_id) => {
+                let prepared_request = &self.prepared_requests[prepared_id];
                 let table_request_group = &self.inflight_requests[prepared_request.template.table];
 
                 if let Some(filter) = prepared_request.filter {
@@ -211,20 +233,22 @@ impl Dibs {
                     let mut bucket_guard = bucket.lock().unwrap();
 
                     notifications.extend(self.solve_prepared(
-                        *id,
+                        request.transaction_id,
+                        prepared_id,
                         &request.arguments,
                         bucket_guard.values(),
                     ));
 
                     if table_request_group.residual_count.load(Ordering::Acquire) > 0 {
                         notifications.extend(self.solve_prepared(
-                            *id,
+                            request.transaction_id,
+                            prepared_id,
                             &request.arguments,
                             table_request_group.residual.lock().unwrap().values(),
                         ));
                     }
 
-                    bucket_guard.insert(*id, request);
+                    bucket_guard.insert(prepared_id, request);
 
                     RequestGuard {
                         id: request_id,
@@ -238,7 +262,8 @@ impl Dibs {
                         let bucket_guard = bucket.lock().unwrap();
 
                         notifications.extend(self.solve_prepared(
-                            *id,
+                            request.transaction_id,
+                            prepared_id,
                             &request.arguments,
                             bucket_guard.values(),
                         ));
@@ -249,7 +274,8 @@ impl Dibs {
                     let mut residual_guard = table_request_group.residual.lock().unwrap();
 
                     notifications.extend(self.solve_prepared(
-                        *id,
+                        request.transaction_id,
+                        prepared_id,
                         &request.arguments,
                         residual_guard.values(),
                     ));
@@ -270,19 +296,26 @@ impl Dibs {
         };
 
         for notification in &notifications {
-            notification.wait();
+            if notification.wait_timeout(timeout).timed_out() {
+                return None;
+            }
         }
 
-        request_guard
+        Some(request_guard)
     }
 
     fn solve_ad_hoc<'a>(
         &'a self,
+        transaction_id: usize,
         template: &'a RequestTemplate,
         arguments: &'a [Value],
         other_requests: impl Iterator<Item = &'a Request> + 'a,
     ) -> impl Iterator<Item = Arc<Notification>> + 'a {
         other_requests.filter_map(move |other_request| {
+            if other_request.transaction_id == transaction_id {
+                return None;
+            }
+
             let other_template = match &other_request.variant {
                 RequestVariant::AdHoc(t) => t,
                 RequestVariant::Prepared(id) => &self.prepared_requests[*id].template,
@@ -305,34 +338,43 @@ impl Dibs {
 
     fn solve_prepared<'a>(
         &'a self,
-        id: usize,
+        transaction_id: usize,
+        prepared_id: usize,
         arguments: &'a [Value],
         other_requests: impl Iterator<Item = &'a Request> + 'a,
     ) -> impl Iterator<Item = Arc<Notification>> + 'a {
-        other_requests.filter_map(move |other_request| match &other_request.variant {
-            RequestVariant::AdHoc(other_template) => {
-                if potential_conflict(&self.prepared_requests[id].template, other_template)
-                    && solver::solve_clustered(
-                        &self.prepared_requests[id].template.predicate,
+        other_requests.filter_map(move |other_request| {
+            if other_request.transaction_id == transaction_id {
+                return None;
+            }
+
+            match &other_request.variant {
+                RequestVariant::AdHoc(other_template) => {
+                    if potential_conflict(
+                        &self.prepared_requests[prepared_id].template,
+                        other_template,
+                    ) && solver::solve_clustered(
+                        &self.prepared_requests[prepared_id].template.predicate,
                         arguments,
                         &other_template.predicate,
                         &other_request.arguments,
-                    )
-                {
-                    Some(other_request.notification.clone())
-                } else {
-                    None
-                }
-            }
-            RequestVariant::Prepared(other_id) => self.prepared_requests[id].conflicts[*other_id]
-                .as_ref()
-                .and_then(|conflict| {
-                    if solver::evaluate(conflict, &arguments, &other_request.arguments) {
+                    ) {
                         Some(other_request.notification.clone())
                     } else {
                         None
                     }
-                }),
+                }
+                RequestVariant::Prepared(other_id) => self.prepared_requests[prepared_id].conflicts
+                    [*other_id]
+                    .as_ref()
+                    .and_then(|conflict| {
+                        if solver::evaluate(conflict, &arguments, &other_request.arguments) {
+                            Some(other_request.notification.clone())
+                        } else {
+                            None
+                        }
+                    }),
+            }
         })
     }
 }
@@ -349,14 +391,14 @@ mod tests {
             Predicate::comparison(ComparisonOperator::Eq, 1, 1),
         ]);
 
-        let p_args = &[Value::Integer(0), Value::Integer(1)];
+        let _p_args = &[Value::Integer(0), Value::Integer(1)];
 
         let q = Predicate::disjunction(vec![
             Predicate::comparison(ComparisonOperator::Eq, 0, 2),
             Predicate::comparison(ComparisonOperator::Eq, 1, 3),
         ]);
 
-        let q_args = &[Value::Integer(0), Value::Integer(1)];
+        let _q_args = &[Value::Integer(0), Value::Integer(1)];
 
         println!("Predicate P:\n{}\n", p);
 
