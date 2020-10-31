@@ -1,10 +1,101 @@
 use crate::Server;
+use dibs::predicate::{ComparisonOperator, Predicate, Value};
+use dibs::{Dibs, Request, RequestTemplate, RequestVariant};
 use rand::rngs::ThreadRng;
 use rand::Rng;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
+pub fn dibs() -> Dibs {
+    let filters = &[Some(0), Some(0), Some(0), Some(0)];
+    let templates = &[
+        // (0) Get subscriber data.
+        RequestTemplate::new(
+            0,
+            (0..36).collect(),
+            HashSet::new(),
+            Predicate::comparison(ComparisonOperator::Eq, 0, 0),
+        ),
+        // (1) Get new destination (special facility).
+        RequestTemplate::new(
+            2,
+            (0..3).collect(),
+            HashSet::new(),
+            Predicate::conjunction(vec![
+                Predicate::comparison(ComparisonOperator::Eq, 0, 0),
+                Predicate::comparison(ComparisonOperator::Eq, 1, 1),
+            ]),
+        ),
+        // (2) Get new destination (call forwarding).
+        RequestTemplate::new(
+            3,
+            (0..5).collect(),
+            HashSet::new(),
+            Predicate::conjunction(vec![
+                Predicate::comparison(ComparisonOperator::Eq, 0, 0),
+                Predicate::comparison(ComparisonOperator::Eq, 1, 1),
+                Predicate::comparison(ComparisonOperator::Le, 2, 2),
+                Predicate::comparison(ComparisonOperator::Gt, 3, 3),
+            ]),
+        ),
+        // (3) Get access data.
+        RequestTemplate::new(
+            1,
+            (0..6).collect(),
+            HashSet::new(),
+            Predicate::conjunction(vec![
+                Predicate::comparison(ComparisonOperator::Eq, 0, 0),
+                Predicate::comparison(ComparisonOperator::Eq, 1, 1),
+            ]),
+        ),
+        // (4) Update subscriber bit.
+        RequestTemplate::new(
+            0,
+            [0].iter().cloned().collect(),
+            [2].iter().cloned().collect(),
+            Predicate::comparison(ComparisonOperator::Eq, 0, 0),
+        ),
+        // (5) Update special facility data.
+        RequestTemplate::new(
+            2,
+            (0..2).collect(),
+            [4].iter().cloned().collect(),
+            Predicate::conjunction(vec![
+                Predicate::comparison(ComparisonOperator::Eq, 0, 0),
+                Predicate::comparison(ComparisonOperator::Eq, 1, 1),
+            ]),
+        ),
+        // (6) Update subscriber location.
+        RequestTemplate::new(
+            0,
+            [0].iter().cloned().collect(),
+            [35].iter().cloned().collect(),
+            Predicate::comparison(ComparisonOperator::Eq, 0, 0),
+        ),
+        // (7) Get special facility types.
+        RequestTemplate::new(
+            2,
+            (0..2).collect(),
+            HashSet::new(),
+            Predicate::comparison(ComparisonOperator::Eq, 0, 0),
+        ),
+        // (8) Insert/delete call forwarding.
+        RequestTemplate::new(
+            3,
+            HashSet::new(),
+            (0..5).collect(),
+            Predicate::conjunction(vec![
+                Predicate::comparison(ComparisonOperator::Eq, 0, 0),
+                Predicate::comparison(ComparisonOperator::Eq, 1, 1),
+                Predicate::comparison(ComparisonOperator::Eq, 2, 2),
+            ]),
+        ),
+    ];
 
+    Dibs::new(filters, templates)
+}
 
 pub trait TATPServer {
     /// Get subscriber data by ID.
@@ -134,6 +225,7 @@ impl TATPConfig {
 
 pub struct TATPClient<S> {
     config: TATPConfig,
+    dibs: Arc<Dibs>,
     server: Arc<S>,
     transaction_counter: Arc<AtomicUsize>,
     terminate: Arc<AtomicBool>,
@@ -142,12 +234,14 @@ pub struct TATPClient<S> {
 impl<S> TATPClient<S> {
     pub fn new(
         config: TATPConfig,
+        dibs: Arc<Dibs>,
         server: Arc<S>,
         transaction_counter: Arc<AtomicUsize>,
         terminate: Arc<AtomicBool>,
     ) -> TATPClient<S> {
         TATPClient {
             config,
+            dibs,
             server,
             transaction_counter,
             terminate,
@@ -161,27 +255,88 @@ where
 {
     pub fn run(&self) {
         let mut rng = rand::thread_rng();
+        let timeout = Duration::from_secs(100);
 
         while !self.terminate.load(Ordering::Relaxed) {
+            let transaction_id = self.transaction_counter.fetch_add(1, Ordering::Relaxed);
+
             let transaction_type = rng.gen_range(0, 100);
             let s_id = self.config.gen_s_id(&mut rng);
 
             if transaction_type < 35 {
                 // GET_SUBSCRIBER_DATA
                 // Probability: 35%
-                test::black_box(self.server.get_subscriber_data(s_id));
+                let _guard = self.dibs.acquire(
+                    Request::new(
+                        transaction_id,
+                        RequestVariant::Prepared(0),
+                        vec![Value::Integer(s_id as usize)],
+                    ),
+                    timeout,
+                );
+
+                self.server.get_subscriber_data(s_id);
             } else if transaction_type < 45 {
                 // GET_NEW_DESTINATION
                 // Probability: 10%
                 let sf_type = rng.gen_range(1, 5);
                 let start_time = rng.gen_range(0, 3) * 8;
                 let end_time = rng.gen_range(1, 25);
+
+                let _guard_sf = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(1),
+                            vec![
+                                Value::Integer(s_id as usize),
+                                Value::Integer(sf_type as usize),
+                            ],
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
+                let _guard_cf = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(2),
+                            vec![
+                                Value::Integer(s_id as usize),
+                                Value::Integer(sf_type as usize),
+                                Value::Integer(start_time as usize),
+                                Value::Integer(end_time as usize),
+                            ],
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
                 self.server
                     .get_new_destination(s_id, sf_type, start_time, end_time);
             } else if transaction_type < 80 {
                 // GET_ACCESS_DATA
                 // Probability: 35%
                 let ai_type = rng.gen_range(1, 5);
+
+                let _guard = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(3),
+                            vec![
+                                Value::Integer(s_id as usize),
+                                Value::Integer(ai_type as usize),
+                            ],
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
                 self.server.get_access_data(s_id, ai_type);
             } else if transaction_type < 82 {
                 // UPDATE_SUBSCRIBER_DATA
@@ -189,6 +344,34 @@ where
                 let bit_1 = rng.gen();
                 let data_a = rng.gen();
                 let sf_type = rng.gen_range(1, 5);
+
+                let _guard_s = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(4),
+                            vec![Value::Integer(s_id as usize)],
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
+                let _guard_sf = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(5),
+                            vec![
+                                Value::Integer(s_id as usize),
+                                Value::Integer(sf_type as usize),
+                            ],
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
                 self.server.update_subscriber_bit(bit_1, s_id);
                 self.server
                     .update_special_facility_data(data_a, s_id, sf_type);
@@ -196,6 +379,19 @@ where
                 // UPDATE_LOCATION
                 // Probability: 14%
                 let vlr_location = rng.gen();
+
+                let _guard = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(6),
+                            vec![Value::Integer(s_id as usize)],
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
                 self.server.update_subscriber_location(vlr_location, s_id);
             } else if transaction_type < 98 {
                 // INSERT_CALL_FORWARDING
@@ -204,6 +400,35 @@ where
                 let start_time = rng.gen_range(0, 3) * 8;
                 let end_time = rng.gen_range(1, 25);
                 let numberx = self.config.gen_numberx(&mut rng);
+
+                let _guard_sf = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(7),
+                            vec![Value::Integer(s_id as usize)],
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
+                let _guard_cf = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(8),
+                            vec![
+                                Value::Integer(s_id as usize),
+                                Value::Integer(sf_type as usize),
+                                Value::Integer(start_time as usize),
+                            ],
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
                 self.server.get_special_facility_types(s_id);
                 self.server
                     .insert_call_forwarding(s_id, sf_type, start_time, end_time, numberx);
@@ -212,11 +437,26 @@ where
                 // Probability: 2%
                 let sf_type = rng.gen_range(1, 5);
                 let start_time = rng.gen_range(0, 3) * 8;
+
+                let _guard = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(8),
+                            vec![
+                                Value::Integer(s_id as usize),
+                                Value::Integer(sf_type as usize),
+                                Value::Integer(start_time as usize),
+                            ],
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
                 self.server
                     .delete_call_forwarding(s_id, sf_type, start_time);
             }
-
-            self.transaction_counter.fetch_add(1, Ordering::Relaxed);
         }
     }
 }

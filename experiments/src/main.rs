@@ -19,15 +19,17 @@ pub trait Server {
 }
 
 fn main() {
-    let config = TATPConfig::new(1_000_000);
+    let config = TATPConfig::new(100_000);
+    let dibs = Arc::new(tatp::dibs());
     let server = Arc::new(ArrowTATPServer::new(&config));
     let transaction_counter = Arc::new(AtomicUsize::new(0));
     let terminate = Arc::new(AtomicBool::new(false));
 
-    let threads = (0..2)
+    let threads = (0..1)
         .map(|_| {
             let client = TATPClient::new(
                 config.clone(),
+                Arc::clone(&dibs),
                 Arc::clone(&server),
                 Arc::clone(&transaction_counter),
                 Arc::clone(&terminate.clone()),

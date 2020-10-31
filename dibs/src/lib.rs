@@ -1,12 +1,10 @@
-use crate::notification::Notification;
 use crate::predicate::{ComparisonOperator, Connective, Predicate, Value};
 use fnv::FnvHashMap;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, WaitTimeoutResult};
 use std::time::Duration;
 
-mod notification;
 pub mod predicate;
 mod solver;
 mod union_find;
@@ -46,7 +44,7 @@ pub struct Request {
     transaction_id: usize,
     variant: RequestVariant,
     arguments: Vec<Value>,
-    notification: Arc<Notification>,
+    completed: (Mutex<bool>, Condvar),
 }
 
 impl Request {
@@ -55,12 +53,21 @@ impl Request {
             transaction_id,
             variant,
             arguments,
-            notification: Arc::new(Notification::new()),
+            completed: (Mutex::new(false), Condvar::new()),
         }
     }
 
     pub fn complete(&self) {
-        self.notification.notify();
+        let (lock, cvar) = &self.completed;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+    }
+
+    pub fn await_completion(&self, timeout: Duration) -> WaitTimeoutResult {
+        let (lock, cvar) = &self.completed;
+        cvar.wait_timeout_while(lock.lock().unwrap(), timeout, |completed| !*completed)
+            .unwrap()
+            .1
     }
 }
 
@@ -70,29 +77,22 @@ struct PreparedRequest {
     conflicts: Vec<Option<Predicate>>,
 }
 
-struct TableRequestGroup {
-    filtered: Vec<Mutex<FnvHashMap<usize, Request>>>,
-    residual: Mutex<FnvHashMap<usize, Request>>,
-    residual_count: AtomicUsize,
-}
+type RequestBucket = Arc<Mutex<FnvHashMap<usize, Arc<Request>>>>;
 
-pub struct RequestGuard<'a> {
+pub struct RequestGuard {
     id: usize,
-    bucket: &'a Mutex<FnvHashMap<usize, Request>>,
-    residual_count: Option<&'a AtomicUsize>,
+    buckets: Vec<RequestBucket>,
 }
 
-impl<'a> Drop for RequestGuard<'a> {
+impl Drop for RequestGuard {
     fn drop(&mut self) {
-        self.bucket
-            .lock()
-            .unwrap()
-            .remove(&self.id)
-            .expect(&format!("no request with id {}", self.id))
-            .complete();
-
-        if let Some(residual_count) = self.residual_count {
-            residual_count.fetch_sub(1, Ordering::Release);
+        for bucket in &self.buckets {
+            bucket
+                .lock()
+                .unwrap()
+                .remove(&self.id)
+                .expect(&format!("no request with id {}", self.id))
+                .complete();
         }
     }
 }
@@ -147,7 +147,7 @@ fn prepare_conflicts(
 
 pub struct Dibs {
     prepared_requests: Vec<PreparedRequest>,
-    inflight_requests: Vec<TableRequestGroup>,
+    inflight_requests: Vec<Vec<RequestBucket>>,
     request_count: AtomicUsize,
 }
 
@@ -163,12 +163,10 @@ impl Dibs {
             .collect();
 
         let inflight_requests = (0..filters.len())
-            .map(|_| TableRequestGroup {
-                filtered: (0..FILTER_MAGNITUDE)
-                    .map(|_| Mutex::new(FnvHashMap::default()))
-                    .collect(),
-                residual: Mutex::new(FnvHashMap::default()),
-                residual_count: AtomicUsize::new(0),
+            .map(|_| {
+                (0..FILTER_MAGNITUDE)
+                    .map(|_| Arc::new(Mutex::new(FnvHashMap::default())))
+                    .collect()
             })
             .collect();
 
@@ -180,202 +178,158 @@ impl Dibs {
     }
 
     pub fn acquire(&self, request: Request, timeout: Duration) -> Option<RequestGuard> {
+        let request = Arc::new(request);
         let request_id = self.request_count.fetch_add(1, Ordering::Relaxed);
-        let mut notifications = vec![];
 
-        let request_guard = match &request.variant {
+        let mut conflicting_requests = vec![];
+
+        let buckets = match &request.variant {
             RequestVariant::AdHoc(template) => {
-                let table_request_group = &self.inflight_requests[template.table];
-
-                let mut guards = Vec::with_capacity(table_request_group.filtered.len());
-
-                for bucket in &table_request_group.filtered {
-                    let bucket_guard = bucket.lock().unwrap();
-
-                    notifications.extend(self.solve_ad_hoc(
-                        request.transaction_id,
+                let buckets = &self.inflight_requests[template.table];
+                for bucket in buckets {
+                    self.solve_ad_hoc(
+                        request_id,
+                        &request,
                         template,
-                        &request.arguments,
-                        bucket_guard.values(),
-                    ));
-
-                    guards.push(bucket_guard);
+                        bucket,
+                        &mut conflicting_requests,
+                    );
                 }
 
-                let mut residual_guard = table_request_group.residual.lock().unwrap();
-
-                notifications.extend(self.solve_ad_hoc(
-                    request.transaction_id,
-                    template,
-                    &request.arguments,
-                    residual_guard.values(),
-                ));
-
-                table_request_group
-                    .residual_count
-                    .fetch_add(1, Ordering::Release);
-
-                residual_guard.insert(request_id, request);
-
-                RequestGuard {
-                    id: request_id,
-                    bucket: &table_request_group.residual,
-                    residual_count: Some(&table_request_group.residual_count),
-                }
+                buckets.clone()
             }
 
             &RequestVariant::Prepared(prepared_id) => {
                 let prepared_request = &self.prepared_requests[prepared_id];
-                let table_request_group = &self.inflight_requests[prepared_request.template.table];
+                let buckets = &self.inflight_requests[prepared_request.template.table];
 
-                if let Some(filter) = prepared_request.filter {
-                    let bucket = &table_request_group.filtered[filter];
-                    let mut bucket_guard = bucket.lock().unwrap();
+                match prepared_request.filter {
+                    Some(filter) => {
+                        let bucket_index = match request.arguments[filter] {
+                            Value::Integer(v) => v % buckets.len(),
+                            _ => panic!("filtering on non-integer columns is not yet supported"),
+                        };
 
-                    notifications.extend(self.solve_prepared(
-                        request.transaction_id,
-                        prepared_id,
-                        &request.arguments,
-                        bucket_guard.values(),
-                    ));
+                        let bucket = &buckets[bucket_index];
 
-                    if table_request_group.residual_count.load(Ordering::Acquire) > 0 {
-                        notifications.extend(self.solve_prepared(
-                            request.transaction_id,
+                        self.solve_prepared(
+                            request_id,
+                            &request,
                             prepared_id,
-                            &request.arguments,
-                            table_request_group.residual.lock().unwrap().values(),
-                        ));
+                            bucket,
+                            &mut conflicting_requests,
+                        );
+
+                        vec![Arc::clone(bucket)]
                     }
 
-                    bucket_guard.insert(prepared_id, request);
+                    None => {
+                        for bucket in buckets {
+                            self.solve_prepared(
+                                request_id,
+                                &request,
+                                prepared_id,
+                                bucket,
+                                &mut conflicting_requests,
+                            );
+                        }
 
-                    RequestGuard {
-                        id: request_id,
-                        bucket,
-                        residual_count: None,
-                    }
-                } else {
-                    let mut guards = Vec::with_capacity(table_request_group.filtered.len());
-
-                    for bucket in &table_request_group.filtered {
-                        let bucket_guard = bucket.lock().unwrap();
-
-                        notifications.extend(self.solve_prepared(
-                            request.transaction_id,
-                            prepared_id,
-                            &request.arguments,
-                            bucket_guard.values(),
-                        ));
-
-                        guards.push(bucket_guard);
-                    }
-
-                    let mut residual_guard = table_request_group.residual.lock().unwrap();
-
-                    notifications.extend(self.solve_prepared(
-                        request.transaction_id,
-                        prepared_id,
-                        &request.arguments,
-                        residual_guard.values(),
-                    ));
-
-                    table_request_group
-                        .residual_count
-                        .fetch_add(1, Ordering::Release);
-
-                    residual_guard.insert(request_id, request);
-
-                    RequestGuard {
-                        id: request_id,
-                        bucket: &table_request_group.residual,
-                        residual_count: Some(&table_request_group.residual_count),
+                        buckets.clone()
                     }
                 }
             }
         };
 
-        for notification in &notifications {
-            if notification.wait_timeout(timeout).timed_out() {
+        for conflicting_request in &conflicting_requests {
+            if conflicting_request.await_completion(timeout).timed_out() {
                 return None;
             }
         }
 
-        Some(request_guard)
-    }
-
-    fn solve_ad_hoc<'a>(
-        &'a self,
-        transaction_id: usize,
-        template: &'a RequestTemplate,
-        arguments: &'a [Value],
-        other_requests: impl Iterator<Item = &'a Request> + 'a,
-    ) -> impl Iterator<Item = Arc<Notification>> + 'a {
-        other_requests.filter_map(move |other_request| {
-            if other_request.transaction_id == transaction_id {
-                return None;
-            }
-
-            let other_template = match &other_request.variant {
-                RequestVariant::AdHoc(t) => t,
-                RequestVariant::Prepared(id) => &self.prepared_requests[*id].template,
-            };
-
-            if potential_conflict(template, other_template)
-                && solver::solve_clustered(
-                    &template.predicate,
-                    arguments,
-                    &other_template.predicate,
-                    &other_request.arguments,
-                )
-            {
-                Some(other_request.notification.clone())
-            } else {
-                None
-            }
+        Some(RequestGuard {
+            id: request_id,
+            buckets,
         })
     }
 
-    fn solve_prepared<'a>(
-        &'a self,
-        transaction_id: usize,
-        prepared_id: usize,
-        arguments: &'a [Value],
-        other_requests: impl Iterator<Item = &'a Request> + 'a,
-    ) -> impl Iterator<Item = Arc<Notification>> + 'a {
-        other_requests.filter_map(move |other_request| {
-            if other_request.transaction_id == transaction_id {
-                return None;
-            }
+    fn solve_ad_hoc(
+        &self,
+        request_id: usize,
+        request: &Arc<Request>,
+        template: &RequestTemplate,
+        bucket: &RequestBucket,
+        conflicting_requests: &mut Vec<Arc<Request>>,
+    ) {
+        let mut bucket_guard = bucket.lock().unwrap();
 
-            match &other_request.variant {
-                RequestVariant::AdHoc(other_template) => {
-                    if potential_conflict(
-                        &self.prepared_requests[prepared_id].template,
-                        other_template,
-                    ) && solver::solve_clustered(
-                        &self.prepared_requests[prepared_id].template.predicate,
-                        arguments,
+        for other_request in bucket_guard.values() {
+            if other_request.transaction_id != request.transaction_id {
+                let other_template = match &other_request.variant {
+                    RequestVariant::AdHoc(t) => t,
+                    &RequestVariant::Prepared(id) => &self.prepared_requests[id].template,
+                };
+
+                if potential_conflict(template, other_template)
+                    && solver::solve_clustered(
+                        &template.predicate,
+                        &request.arguments,
                         &other_template.predicate,
                         &other_request.arguments,
-                    ) {
-                        Some(other_request.notification.clone())
-                    } else {
-                        None
+                    )
+                {
+                    conflicting_requests.push(Arc::clone(other_request));
+                }
+            }
+        }
+
+        bucket_guard.insert(request_id, Arc::clone(request));
+    }
+
+    fn solve_prepared(
+        &self,
+        request_id: usize,
+        request: &Arc<Request>,
+        prepared_id: usize,
+        bucket: &RequestBucket,
+        conflicting_requests: &mut Vec<Arc<Request>>,
+    ) {
+        let mut bucket_guard = bucket.lock().unwrap();
+
+        for other_request in bucket_guard.values() {
+            if other_request.transaction_id != request.transaction_id {
+                match &other_request.variant {
+                    RequestVariant::AdHoc(other_template) => {
+                        if potential_conflict(
+                            &self.prepared_requests[prepared_id].template,
+                            other_template,
+                        ) && solver::solve_clustered(
+                            &self.prepared_requests[prepared_id].template.predicate,
+                            &request.arguments,
+                            &other_template.predicate,
+                            &other_request.arguments,
+                        ) {
+                            conflicting_requests.push(Arc::clone(other_request));
+                        }
+                    }
+
+                    &RequestVariant::Prepared(other_prepared_id) => {
+                        if let Some(conflict) =
+                            &self.prepared_requests[prepared_id].conflicts[other_prepared_id]
+                        {
+                            if solver::evaluate(
+                                conflict,
+                                &request.arguments,
+                                &other_request.arguments,
+                            ) {
+                                conflicting_requests.push(Arc::clone(other_request));
+                            }
+                        }
                     }
                 }
-                RequestVariant::Prepared(other_id) => self.prepared_requests[prepared_id].conflicts
-                    [*other_id]
-                    .as_ref()
-                    .and_then(|conflict| {
-                        if solver::evaluate(conflict, &arguments, &other_request.arguments) {
-                            Some(other_request.notification.clone())
-                        } else {
-                            None
-                        }
-                    }),
             }
-        })
+        }
+
+        bucket_guard.insert(request_id, Arc::clone(request));
     }
 }
 

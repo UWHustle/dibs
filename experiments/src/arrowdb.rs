@@ -202,7 +202,9 @@ impl CallForwarding {
     fn new(special_facility: &SpecialFacility) -> CallForwarding {
         let mut rng = rand::thread_rng();
 
-        let capacity = special_facility.col_s_id.len() * 3 + 1000;
+        let num_free_rows = special_facility.col_s_id.len() * 3;
+
+        let capacity = 2 * num_free_rows;
 
         let mut s_id_builder = UInt32Builder::new(capacity);
         let mut sf_type_builder = UInt8Builder::new(capacity);
@@ -240,7 +242,7 @@ impl CallForwarding {
                 .insert((s_id.unwrap(), sf_type.unwrap()), sub_index);
         }
 
-        for _ in 0..special_facility.col_s_id.len() {
+        for _ in 0..num_free_rows {
             s_id_builder.append_value(0).unwrap();
             sf_type_builder.append_value(0).unwrap();
             start_time_builder.append_value(0).unwrap();
