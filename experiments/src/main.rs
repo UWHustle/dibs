@@ -19,8 +19,14 @@ pub trait Server {
 }
 
 fn main() {
-    let config = TATPConfig::new(100_000);
-    let dibs = Arc::new(tatp::dibs());
+    let config = TATPConfig::new(
+        10_000,
+        [0.35, 0.10, 0.35, 0.02, 0.14, 0.02, 0.02, 0.00, 0.00, 0.00],
+        0,
+        1,
+    );
+
+    let dibs = Arc::new(tatp::dibs(&config));
     let server = Arc::new(ArrowTATPServer::new(&config));
     let transaction_counter = Arc::new(AtomicUsize::new(0));
     let terminate = Arc::new(AtomicBool::new(false));

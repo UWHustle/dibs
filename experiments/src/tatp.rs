@@ -8,13 +8,35 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub fn dibs() -> Dibs {
+fn scan_predicate(num_conjuncts: usize) -> Predicate {
+    assert!(num_conjuncts <= 10);
+
+    Predicate::conjunction(
+        (0..num_conjuncts)
+            .map(|i| {
+                Predicate::disjunction(vec![
+                    Predicate::conjunction(vec![
+                        Predicate::comparison(ComparisonOperator::Ge, i + 21, i * 4),
+                        Predicate::comparison(ComparisonOperator::Le, i + 21, i * 4 + 1),
+                    ]),
+                    Predicate::conjunction(vec![
+                        Predicate::comparison(ComparisonOperator::Ge, i + 21, i * 4 + 2),
+                        Predicate::comparison(ComparisonOperator::Le, i + 21, i * 4 + 3),
+                    ]),
+                ])
+            })
+            .collect(),
+    )
+}
+
+pub fn dibs(config: &TATPConfig) -> Dibs {
     let filters = &[Some(0), Some(0), Some(0), Some(0)];
+
     let templates = &[
         // (0) Get subscriber data.
         RequestTemplate::new(
             0,
-            (0..36).collect(),
+            (0..33).collect(),
             HashSet::new(),
             Predicate::comparison(ComparisonOperator::Eq, 0, 0),
         ),
@@ -71,7 +93,7 @@ pub fn dibs() -> Dibs {
         RequestTemplate::new(
             0,
             [0].iter().cloned().collect(),
-            [35].iter().cloned().collect(),
+            [32].iter().cloned().collect(),
             Predicate::comparison(ComparisonOperator::Eq, 0, 0),
         ),
         // (7) Get special facility types.
@@ -91,6 +113,27 @@ pub fn dibs() -> Dibs {
                 Predicate::comparison(ComparisonOperator::Eq, 1, 1),
                 Predicate::comparison(ComparisonOperator::Eq, 2, 2),
             ]),
+        ),
+        // (9) Get subscriber data scan.
+        RequestTemplate::new(
+            0,
+            (0..33).collect(),
+            HashSet::new(),
+            scan_predicate(config.num_conjuncts),
+        ),
+        // (10) Update subscriber bit scan.
+        RequestTemplate::new(
+            0,
+            (21..31).collect(),
+            [2].iter().cloned().collect(),
+            scan_predicate(config.num_conjuncts),
+        ),
+        // (11) Update subscriber location scan.
+        RequestTemplate::new(
+            0,
+            (21..31).collect(),
+            [32].iter().cloned().collect(),
+            scan_predicate(config.num_conjuncts),
         ),
     ];
 
@@ -186,16 +229,73 @@ pub trait TATPServer {
     /// WHERE s_id = ? AND sf_type = ? AND start_time = ?;
     /// ```
     fn delete_call_forwarding(&self, s_id: u32, sf_type: u8, start_time: u8);
+
+    /// Get subscriber data scan (not part of official TATP).
+    /// ```sql
+    /// SELECT *
+    /// FROM subscriber
+    /// WHERE ((byte2_1 BETWEEN ? AND ?) OR (byte2_1 BETWEEN ? AND ?))
+    ///     AND ((byte2_2 BETWEEN ? AND ?) OR (byte2_2 BETWEEN ? AND ?))
+    ///     AND ((byte2_3 BETWEEN ? AND ?) OR (byte2_3 BETWEEN ? AND ?))
+    ///     AND ((byte2_4 BETWEEN ? AND ?) OR (byte2_4 BETWEEN ? AND ?))
+    ///     AND ((byte2_5 BETWEEN ? AND ?) OR (byte2_5 BETWEEN ? AND ?))
+    ///     AND ((byte2_6 BETWEEN ? AND ?) OR (byte2_6 BETWEEN ? AND ?))
+    ///     AND ((byte2_7 BETWEEN ? AND ?) OR (byte2_7 BETWEEN ? AND ?))
+    ///     AND ((byte2_8 BETWEEN ? AND ?) OR (byte2_8 BETWEEN ? AND ?))
+    ///     AND ((byte2_9 BETWEEN ? AND ?) OR (byte2_9 BETWEEN ? AND ?))
+    ///     AND ((byte2_10 BETWEEN ? AND ?) OR (byte2_10 BETWEEN ? AND ?))
+    /// ```
+    fn get_subscriber_data_scan(
+        &self,
+        byte2: [(u8, u8, u8, u8); 10],
+    ) -> Vec<([bool; 10], [u8; 10], [u8; 10], u32, u32)>;
+
+    /// Update subscriber bit scan (not part of official TATP).
+    /// ```sql
+    /// UPDATE subscriber
+    /// SET bit_1 = ?
+    /// WHERE ((byte2_1 BETWEEN ? AND ?) OR (byte2_1 BETWEEN ? AND ?))
+    ///     AND ((byte2_2 BETWEEN ? AND ?) OR (byte2_2 BETWEEN ? AND ?))
+    ///     AND ((byte2_3 BETWEEN ? AND ?) OR (byte2_3 BETWEEN ? AND ?))
+    ///     AND ((byte2_4 BETWEEN ? AND ?) OR (byte2_4 BETWEEN ? AND ?))
+    ///     AND ((byte2_5 BETWEEN ? AND ?) OR (byte2_5 BETWEEN ? AND ?))
+    ///     AND ((byte2_6 BETWEEN ? AND ?) OR (byte2_6 BETWEEN ? AND ?))
+    ///     AND ((byte2_7 BETWEEN ? AND ?) OR (byte2_7 BETWEEN ? AND ?))
+    ///     AND ((byte2_8 BETWEEN ? AND ?) OR (byte2_8 BETWEEN ? AND ?))
+    ///     AND ((byte2_9 BETWEEN ? AND ?) OR (byte2_9 BETWEEN ? AND ?))
+    ///     AND ((byte2_10 BETWEEN ? AND ?) OR (byte2_10 BETWEEN ? AND ?))
+    /// ```
+    fn update_subscriber_bit_scan(&self, bit_1: bool, byte2: [(u8, u8, u8, u8); 10]);
+
+    /// Update subscriber location scan (not part of official TATP).
+    /// ```sql
+    /// UPDATE subscriber
+    /// SET vlr_location = ?
+    /// WHERE ((byte2_1 BETWEEN ? AND ?) OR (byte2_1 BETWEEN ? AND ?))
+    ///     AND ((byte2_2 BETWEEN ? AND ?) OR (byte2_2 BETWEEN ? AND ?))
+    ///     AND ((byte2_3 BETWEEN ? AND ?) OR (byte2_3 BETWEEN ? AND ?))
+    ///     AND ((byte2_4 BETWEEN ? AND ?) OR (byte2_4 BETWEEN ? AND ?))
+    ///     AND ((byte2_5 BETWEEN ? AND ?) OR (byte2_5 BETWEEN ? AND ?))
+    ///     AND ((byte2_6 BETWEEN ? AND ?) OR (byte2_6 BETWEEN ? AND ?))
+    ///     AND ((byte2_7 BETWEEN ? AND ?) OR (byte2_7 BETWEEN ? AND ?))
+    ///     AND ((byte2_8 BETWEEN ? AND ?) OR (byte2_8 BETWEEN ? AND ?))
+    ///     AND ((byte2_9 BETWEEN ? AND ?) OR (byte2_9 BETWEEN ? AND ?))
+    ///     AND ((byte2_10 BETWEEN ? AND ?) OR (byte2_10 BETWEEN ? AND ?))
+    /// ```
+    fn update_subscriber_location_scan(&self, vlr_location: u32, byte2: [(u8, u8, u8, u8); 10]);
 }
 
 #[derive(Clone)]
 pub struct TATPConfig {
     num_rows: u32,
     a_val: u32,
+    mix: Vec<f64>,
+    scan_range: u8,
+    num_conjuncts: usize,
 }
 
 impl TATPConfig {
-    pub fn new(num_rows: u32) -> TATPConfig {
+    pub fn new(num_rows: u32, mix: [f64; 10], scan_range: u8, num_conjuncts: usize) -> TATPConfig {
         let a_val = if num_rows <= 1000000 {
             65535
         } else if num_rows <= 10000000 {
@@ -204,7 +304,23 @@ impl TATPConfig {
             2097151
         };
 
-        TATPConfig { num_rows, a_val }
+        let mix = mix
+            .iter()
+            .scan(0.0, |state, &x| {
+                *state = *state + x;
+                Some(*state)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(*mix.last().unwrap(), 1.0);
+
+        TATPConfig {
+            num_rows,
+            a_val,
+            mix,
+            scan_range,
+            num_conjuncts,
+        }
     }
 
     pub fn get_num_rows(&self) -> u32 {
@@ -221,6 +337,31 @@ impl TATPConfig {
         numberx[(15 - s.len())..].copy_from_slice(s.as_bytes());
         numberx
     }
+
+    fn gen_byte2(&self, rng: &mut ThreadRng) -> [(u8, u8, u8, u8); 10] {
+        let mut arguments = [(0, 0, 0, 0); 10];
+
+        for argument in &mut arguments {
+            argument.0 = rng.gen_range(0, u8::max_value() - self.scan_range);
+            argument.1 = argument.0 + self.scan_range;
+            argument.2 = rng.gen_range(0, u8::max_value() - self.scan_range);
+            argument.3 = argument.2 + self.scan_range;
+        }
+
+        arguments
+    }
+}
+
+fn byte2_to_arguments(byte2: &[(u8, u8, u8, u8); 10]) -> Vec<Value> {
+    let mut arguments = Vec::with_capacity(40);
+
+    for b in byte2 {
+        for v in &[b.0, b.1, b.2, b.3] {
+            arguments.push(Value::Integer(*v as usize))
+        }
+    }
+
+    arguments
 }
 
 pub struct TATPClient<S> {
@@ -260,12 +401,11 @@ where
         while !self.terminate.load(Ordering::Relaxed) {
             let transaction_id = self.transaction_counter.fetch_add(1, Ordering::Relaxed);
 
-            let transaction_type = rng.gen_range(0, 100);
+            let transaction_type = rng.gen::<f64>();
             let s_id = self.config.gen_s_id(&mut rng);
 
-            if transaction_type < 35 {
+            if transaction_type < self.config.mix[0] {
                 // GET_SUBSCRIBER_DATA
-                // Probability: 35%
                 let _guard = self.dibs.acquire(
                     Request::new(
                         transaction_id,
@@ -276,9 +416,8 @@ where
                 );
 
                 self.server.get_subscriber_data(s_id);
-            } else if transaction_type < 45 {
+            } else if transaction_type < self.config.mix[1] {
                 // GET_NEW_DESTINATION
-                // Probability: 10%
                 let sf_type = rng.gen_range(1, 5);
                 let start_time = rng.gen_range(0, 3) * 8;
                 let end_time = rng.gen_range(1, 25);
@@ -317,9 +456,8 @@ where
 
                 self.server
                     .get_new_destination(s_id, sf_type, start_time, end_time);
-            } else if transaction_type < 80 {
+            } else if transaction_type < self.config.mix[2] {
                 // GET_ACCESS_DATA
-                // Probability: 35%
                 let ai_type = rng.gen_range(1, 5);
 
                 let _guard = self
@@ -338,9 +476,8 @@ where
                     .unwrap();
 
                 self.server.get_access_data(s_id, ai_type);
-            } else if transaction_type < 82 {
+            } else if transaction_type < self.config.mix[3] {
                 // UPDATE_SUBSCRIBER_DATA
-                // Probability: 2%
                 let bit_1 = rng.gen();
                 let data_a = rng.gen();
                 let sf_type = rng.gen_range(1, 5);
@@ -375,9 +512,8 @@ where
                 self.server.update_subscriber_bit(bit_1, s_id);
                 self.server
                     .update_special_facility_data(data_a, s_id, sf_type);
-            } else if transaction_type < 96 {
+            } else if transaction_type < self.config.mix[4] {
                 // UPDATE_LOCATION
-                // Probability: 14%
                 let vlr_location = rng.gen();
 
                 let _guard = self
@@ -393,9 +529,8 @@ where
                     .unwrap();
 
                 self.server.update_subscriber_location(vlr_location, s_id);
-            } else if transaction_type < 98 {
+            } else if transaction_type < self.config.mix[5] {
                 // INSERT_CALL_FORWARDING
-                // Probability: 2%
                 let sf_type = rng.gen_range(1, 5);
                 let start_time = rng.gen_range(0, 3) * 8;
                 let end_time = rng.gen_range(1, 25);
@@ -432,9 +567,8 @@ where
                 self.server.get_special_facility_types(s_id);
                 self.server
                     .insert_call_forwarding(s_id, sf_type, start_time, end_time, numberx);
-            } else {
+            } else if transaction_type < self.config.mix[6] {
                 // DELETE_CALL_FORWARDING
-                // Probability: 2%
                 let sf_type = rng.gen_range(1, 5);
                 let start_time = rng.gen_range(0, 3) * 8;
 
@@ -456,6 +590,79 @@ where
 
                 self.server
                     .delete_call_forwarding(s_id, sf_type, start_time);
+            } else if transaction_type < self.config.mix[7] {
+                // GET_SUBSCRIBER_DATA_SCAN
+                let byte2 = self.config.gen_byte2(&mut rng);
+
+                let _guard = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(9),
+                            byte2_to_arguments(&byte2),
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
+                self.server.get_subscriber_data_scan(byte2);
+            } else if transaction_type < self.config.mix[8] {
+                // UPDATE_SUBSCRIBER_DATA_SCAN
+                let bit_1 = rng.gen();
+                let data_a = rng.gen();
+                let sf_type = rng.gen_range(1, 5);
+                let byte2 = self.config.gen_byte2(&mut rng);
+
+                let _guard_s = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(10),
+                            byte2_to_arguments(&byte2),
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
+                let _guard_sf = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(5),
+                            vec![
+                                Value::Integer(s_id as usize),
+                                Value::Integer(sf_type as usize),
+                            ],
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
+                self.server.update_subscriber_bit_scan(bit_1, byte2);
+                self.server
+                    .update_special_facility_data(data_a, s_id, sf_type);
+            } else {
+                // UPDATE_LOCATION_SCAN
+                let vlr_location = rng.gen();
+                let byte2 = self.config.gen_byte2(&mut rng);
+
+                let _guard = self
+                    .dibs
+                    .acquire(
+                        Request::new(
+                            transaction_id,
+                            RequestVariant::Prepared(11),
+                            byte2_to_arguments(&byte2),
+                        ),
+                        timeout,
+                    )
+                    .unwrap();
+
+                self.server
+                    .update_subscriber_location_scan(vlr_location, byte2);
             }
         }
     }

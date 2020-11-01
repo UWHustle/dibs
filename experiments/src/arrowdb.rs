@@ -79,6 +79,67 @@ impl Subscriber {
             index,
         }
     }
+
+    fn get_row_data(&self, row: usize) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32) {
+        let mut bit = [false; 10];
+        for (dst, src) in bit.iter_mut().zip(&self.col_bit) {
+            *dst = src.value(row);
+        }
+
+        let mut hex = [0; 10];
+        for (dst, src) in hex.iter_mut().zip(&self.col_hex) {
+            *dst = src.value(row);
+        }
+
+        let mut byte2 = [0; 10];
+        for (dst, src) in byte2.iter_mut().zip(&self.col_byte2) {
+            *dst = src.value(row);
+        }
+
+        (
+            bit,
+            hex,
+            byte2,
+            self.col_msc_location.value(row),
+            self.col_vlr_location.value(row),
+        )
+    }
+
+    fn update_row_bit(&self, row: usize, bit_1: bool) {
+        unsafe {
+            let bit_1_dst = self.col_bit[0]
+                .values()
+                .raw_data()
+                .offset((row / 8) as isize) as *mut u8;
+
+            if bit_1 {
+                *bit_1_dst |= 1 << (row % 8);
+            } else {
+                *bit_1_dst &= !(1 << (row % 8));
+            }
+        }
+    }
+
+    fn update_row_location(&self, row: usize, vlr_location: u32) {
+        unsafe {
+            let vlr_location_dst =
+                self.col_vlr_location.raw_values().offset(row as isize) as *mut u32;
+
+            *vlr_location_dst = vlr_location;
+        }
+    }
+
+    fn scan(&self, byte2: [(u8, u8, u8, u8); 10]) -> impl Iterator<Item = usize> + '_ {
+        (0..self.col_s_id.len()).filter(move |&row| {
+            self.col_byte2
+                .iter()
+                .zip(&byte2)
+                .all(|(col_byte2, &(a, b, c, d))| {
+                    let value = col_byte2.value(row);
+                    (value >= a && value <= b) || (value >= c && value <= d)
+                })
+        })
+    }
 }
 
 struct AccessInfo {
@@ -305,30 +366,7 @@ impl Server for ArrowTATPServer {
 
 impl TATPServer for ArrowTATPServer {
     fn get_subscriber_data(&self, s_id: u32) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32) {
-        let row = self.subscriber.index[&s_id];
-
-        let mut bit = [false; 10];
-        for (dst, src) in bit.iter_mut().zip(&self.subscriber.col_bit) {
-            *dst = src.value(row);
-        }
-
-        let mut hex = [0; 10];
-        for (dst, src) in hex.iter_mut().zip(&self.subscriber.col_hex) {
-            *dst = src.value(row);
-        }
-
-        let mut byte2 = [0; 10];
-        for (dst, src) in byte2.iter_mut().zip(&self.subscriber.col_byte2) {
-            *dst = src.value(row);
-        }
-
-        (
-            bit,
-            hex,
-            byte2,
-            self.subscriber.col_msc_location.value(row),
-            self.subscriber.col_vlr_location.value(row),
-        )
+        self.subscriber.get_row_data(self.subscriber.index[&s_id])
     }
 
     fn get_new_destination(
@@ -386,20 +424,8 @@ impl TATPServer for ArrowTATPServer {
     }
 
     fn update_subscriber_bit(&self, bit_1: bool, s_id: u32) {
-        let row = self.subscriber.index[&s_id];
-
-        unsafe {
-            let bit_1_dst = self.subscriber.col_bit[0]
-                .values()
-                .raw_data()
-                .offset((row / 8) as isize) as *mut u8;
-
-            if bit_1 {
-                *bit_1_dst |= 1 << (row % 8);
-            } else {
-                *bit_1_dst &= !(1 << (row % 8));
-            }
-        }
+        self.subscriber
+            .update_row_bit(self.subscriber.index[&s_id], bit_1);
     }
 
     fn update_special_facility_data(&self, data_a: u8, s_id: u32, sf_type: u8) {
@@ -422,16 +448,8 @@ impl TATPServer for ArrowTATPServer {
     }
 
     fn update_subscriber_location(&self, vlr_location: u32, s_id: u32) {
-        let row = self.subscriber.index[&s_id];
-        unsafe {
-            let vlr_location_dst = self
-                .subscriber
-                .col_vlr_location
-                .raw_values()
-                .offset(row as isize) as *mut u32;
-
-            *vlr_location_dst = vlr_location;
-        }
+        self.subscriber
+            .update_row_location(self.subscriber.index[&s_id], vlr_location);
     }
 
     fn get_special_facility_types(&self, s_id: u32) -> Vec<u8> {
@@ -509,6 +527,28 @@ impl TATPServer for ArrowTATPServer {
                 .lock()
                 .unwrap()
                 .push(entry.remove());
+        }
+    }
+
+    fn get_subscriber_data_scan(
+        &self,
+        byte2: [(u8, u8, u8, u8); 10],
+    ) -> Vec<([bool; 10], [u8; 10], [u8; 10], u32, u32)> {
+        self.subscriber
+            .scan(byte2)
+            .map(|row| self.subscriber.get_row_data(row))
+            .collect()
+    }
+
+    fn update_subscriber_bit_scan(&self, bit_1: bool, byte2: [(u8, u8, u8, u8); 10]) {
+        for row in self.subscriber.scan(byte2) {
+            self.subscriber.update_row_bit(row, bit_1);
+        }
+    }
+
+    fn update_subscriber_location_scan(&self, vlr_location: u32, byte2: [(u8, u8, u8, u8); 10]) {
+        for row in self.subscriber.scan(byte2) {
+            self.subscriber.update_row_location(row, vlr_location);
         }
     }
 }
