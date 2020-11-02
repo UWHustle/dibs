@@ -2,7 +2,7 @@
 #![feature(test)]
 
 use crate::arrowdb::ArrowTATPServer;
-use crate::tatp::{TATPClient, TATPConfig};
+use crate::tatp::{TATPClient, TATPConfig, TATPDibs};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -20,7 +20,7 @@ pub trait Server {
 
 fn main() {
     let config = TATPConfig::new(
-        10_000,
+        1_000_000,
         [0.35, 0.10, 0.35, 0.02, 0.14, 0.02, 0.02, 0.00, 0.00, 0.00],
         0,
         1,
@@ -28,7 +28,7 @@ fn main() {
 
     let num_workers = 1;
 
-    let dibs = Arc::new(tatp::dibs(&config));
+    let dibs = Arc::new(TATPDibs::new(&config));
     let server = Arc::new(ArrowTATPServer::new(&config));
     let transaction_counter = Arc::new(AtomicUsize::new(0));
     let terminate = Arc::new(AtomicBool::new(false));
@@ -44,6 +44,7 @@ fn main() {
                 Arc::clone(&server),
                 Arc::clone(&transaction_counter),
                 Arc::clone(&terminate.clone()),
+                true
             );
 
             thread::spawn(move || {
@@ -54,7 +55,7 @@ fn main() {
         })
         .collect::<Vec<_>>();
 
-    let duration = Duration::from_secs(30);
+    let duration = Duration::from_secs(10);
 
     thread::sleep(duration);
 
