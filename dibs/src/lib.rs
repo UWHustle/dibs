@@ -9,7 +9,7 @@ pub mod predicate;
 mod solver;
 mod union_find;
 
-const FILTER_MAGNITUDE: usize = 512;
+const FILTER_MAGNITUDE: usize = 1024;
 
 #[derive(Clone)]
 pub struct RequestTemplate {
@@ -149,10 +149,15 @@ pub struct Dibs {
     prepared_requests: Vec<PreparedRequest>,
     inflight_requests: Vec<Vec<RequestBucket>>,
     request_count: AtomicUsize,
+    grouped_solve: bool,
 }
 
 impl Dibs {
-    pub fn new(filters: &[Option<usize>], templates: &[RequestTemplate]) -> Dibs {
+    pub fn new(
+        filters: &[Option<usize>],
+        templates: &[RequestTemplate],
+        grouped_solve: bool,
+    ) -> Dibs {
         let prepared_requests = templates
             .iter()
             .map(|template| PreparedRequest {
@@ -162,9 +167,15 @@ impl Dibs {
             })
             .collect();
 
-        let inflight_requests = (0..filters.len())
-            .map(|_| {
-                (0..FILTER_MAGNITUDE)
+        let inflight_requests = filters
+            .iter()
+            .map(|filter| {
+                let num_partitions = match filter {
+                    Some(_) => FILTER_MAGNITUDE,
+                    None => 1,
+                };
+
+                (0..num_partitions)
                     .map(|_| Arc::new(Mutex::new(FnvHashMap::default())))
                     .collect()
             })
@@ -174,6 +185,7 @@ impl Dibs {
             prepared_requests,
             inflight_requests,
             request_count: AtomicUsize::new(0),
+            grouped_solve,
         }
     }
 
@@ -269,15 +281,26 @@ impl Dibs {
                     &RequestVariant::Prepared(id) => &self.prepared_requests[id].template,
                 };
 
-                if potential_conflict(template, other_template)
-                    && solver::solve_clustered(
-                        &template.predicate,
-                        &request.arguments,
-                        &other_template.predicate,
-                        &other_request.arguments,
-                    )
-                {
-                    conflicting_requests.push(Arc::clone(other_request));
+                if potential_conflict(template, other_template) {
+                    if self.grouped_solve {
+                        if solver::solve_clustered(
+                            &template.predicate,
+                            &request.arguments,
+                            &other_template.predicate,
+                            &other_request.arguments,
+                        ) {
+                            conflicting_requests.push(Arc::clone(other_request));
+                        }
+                    } else {
+                        if solver::solve_dnf(
+                            &template.predicate,
+                            &request.arguments,
+                            &other_template.predicate,
+                            &other_request.arguments,
+                        ) {
+                            conflicting_requests.push(Arc::clone(other_request));
+                        }
+                    }
                 }
             }
         }

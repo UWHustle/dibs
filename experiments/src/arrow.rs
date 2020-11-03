@@ -1,5 +1,5 @@
+use crate::scan::{ScanConfig, ScanServer};
 use crate::tatp::{TATPConfig, TATPServer};
-use crate::Server;
 use arrow::array::{
     ArrayBuilder, BooleanArray, BooleanBuilder, FixedSizeBinaryArray, FixedSizeBinaryBuilder,
     PrimitiveArrayOps, UInt32Array, UInt32Builder, UInt8Array, UInt8Builder,
@@ -22,10 +22,10 @@ struct Subscriber {
 }
 
 impl Subscriber {
-    fn new(config: &TATPConfig) -> Subscriber {
+    fn new(num_rows: u32) -> Subscriber {
         let mut rng = rand::thread_rng();
 
-        let mut s_ids = (1..=config.get_num_rows()).collect::<Vec<_>>();
+        let mut s_ids = (1..=num_rows).collect::<Vec<_>>();
         s_ids.shuffle(&mut rng);
 
         let mut s_id_builder = UInt32Builder::new(s_ids.len());
@@ -344,7 +344,7 @@ pub struct ArrowTATPServer {
 
 impl ArrowTATPServer {
     pub fn new(config: &TATPConfig) -> ArrowTATPServer {
-        let subscriber = Subscriber::new(config);
+        let subscriber = Subscriber::new(config.get_num_rows());
         let access_info = AccessInfo::new(&subscriber);
         let special_facility = SpecialFacility::new(&subscriber);
         let call_forwarding = CallForwarding::new(&special_facility);
@@ -356,12 +356,6 @@ impl ArrowTATPServer {
             call_forwarding,
         }
     }
-}
-
-impl Server for ArrowTATPServer {
-    fn begin_transaction(&self) {}
-
-    fn commit_transaction(&self) {}
 }
 
 impl TATPServer for ArrowTATPServer {
@@ -529,7 +523,21 @@ impl TATPServer for ArrowTATPServer {
                 .push(entry.remove());
         }
     }
+}
 
+pub struct ArrowScanServer {
+    subscriber: Subscriber,
+}
+
+impl ArrowScanServer {
+    pub fn new(config: &ScanConfig) -> ArrowScanServer {
+        ArrowScanServer {
+            subscriber: Subscriber::new(config.get_num_rows()),
+        }
+    }
+}
+
+impl ScanServer for ArrowScanServer {
     fn get_subscriber_data_scan(
         &self,
         byte2: [(u8, u8, u8, u8); 10],
@@ -538,12 +546,6 @@ impl TATPServer for ArrowTATPServer {
             .scan(byte2)
             .map(|row| self.subscriber.get_row_data(row))
             .collect()
-    }
-
-    fn update_subscriber_bit_scan(&self, bit_1: bool, byte2: [(u8, u8, u8, u8); 10]) {
-        for row in self.subscriber.scan(byte2) {
-            self.subscriber.update_row_bit(row, bit_1);
-        }
     }
 
     fn update_subscriber_location_scan(&self, vlr_location: u32, byte2: [(u8, u8, u8, u8); 10]) {
