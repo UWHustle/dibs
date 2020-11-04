@@ -22,14 +22,13 @@ fn main() {
 
     let num_rows = u32::from_str(matches.value_of("num_rows").unwrap()).unwrap();
     let select_mix = f64::from_str(matches.value_of("select_mix").unwrap()).unwrap();
-    let update_mix = f64::from_str(matches.value_of("update_mix").unwrap()).unwrap();
     let range = u8::from_str(matches.value_of("range").unwrap()).unwrap();
     let num_conjuncts = usize::from_str(matches.value_of("num_conjuncts").unwrap()).unwrap();
     let optimization =
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let config = ScanConfig::new(num_rows, select_mix, update_mix, range, num_conjuncts);
+    let config = ScanConfig::new(num_rows, select_mix, range, num_conjuncts);
     let dibs = Arc::new(scan::dibs(num_conjuncts, optimization));
     let server = Arc::new(ArrowScanServer::new(&config));
 

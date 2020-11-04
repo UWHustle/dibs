@@ -7,6 +7,7 @@ pub mod arrow;
 pub mod runner;
 pub mod scan;
 pub mod tatp;
+pub mod ycsb;
 
 pub trait Client {
     fn execute_transaction(&self, transaction_id: usize);

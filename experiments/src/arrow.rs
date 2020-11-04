@@ -1,5 +1,6 @@
 use crate::scan::{ScanConfig, ScanServer};
 use crate::tatp::{TATPConfig, TATPServer};
+use crate::ycsb::YCSBServer;
 use arrow::array::{
     ArrayBuilder, BooleanArray, BooleanBuilder, FixedSizeBinaryArray, FixedSizeBinaryBuilder,
     PrimitiveArrayOps, UInt32Array, UInt32Builder, UInt8Array, UInt8Builder,
@@ -551,6 +552,68 @@ impl ScanServer for ArrowScanServer {
     fn update_subscriber_location_scan(&self, vlr_location: u32, byte2: [(u8, u8, u8, u8); 10]) {
         for row in self.subscriber.scan(byte2) {
             self.subscriber.update_row_location(row, vlr_location);
+        }
+    }
+}
+
+pub struct ArrowYCSBServer {
+    _col_user_id: UInt32Array,
+    col_fields: Vec<FixedSizeBinaryArray>,
+    index: FnvHashMap<u32, usize>,
+}
+
+impl ArrowYCSBServer {
+    pub fn new(num_rows: u32, num_fields: usize, field_size: usize) -> ArrowYCSBServer {
+        assert!(field_size > 0 && field_size <= i32::max_value() as usize);
+
+        let mut rng = rand::thread_rng();
+
+        let mut user_ids = (0..num_rows).collect::<Vec<_>>();
+        user_ids.shuffle(&mut rng);
+
+        let mut user_id_builder = UInt32Builder::new(user_ids.len());
+        let mut field_builders = (0..num_fields)
+            .map(|_| FixedSizeBinaryBuilder::new(user_ids.len(), field_size as i32))
+            .collect::<Vec<_>>();
+
+        let mut index = FnvHashMap::default();
+
+        for (row, &user_id) in user_ids.iter().enumerate() {
+            user_id_builder.append_value(user_id).unwrap();
+
+            for field_builder in &mut field_builders {
+                field_builder
+                    .append_value(&(0..field_size).map(|_| rng.gen()).collect::<Vec<_>>())
+                    .unwrap();
+            }
+
+            index.insert(user_id, row);
+        }
+
+        ArrowYCSBServer {
+            _col_user_id: user_id_builder.finish(),
+            col_fields: field_builders.into_iter().map(|mut b| b.finish()).collect(),
+            index,
+        }
+    }
+}
+
+impl YCSBServer for ArrowYCSBServer {
+    fn select_user(&self, field: usize, user_id: u32) -> Vec<u8> {
+        let row = self.index.get(&user_id).unwrap();
+        self.col_fields[field].value(*row).to_vec()
+    }
+
+    fn update_user(&self, field: usize, data: &[u8], user_id: u32) {
+        let row = self.index.get(&user_id).unwrap();
+        let value = self.col_fields[field].value(*row);
+
+        assert_eq!(data.len(), value.len());
+
+        let data_dst = value.as_ptr() as *mut u8;
+
+        unsafe {
+            data_dst.copy_from(data.as_ptr(), data.len());
         }
     }
 }

@@ -71,25 +71,17 @@ fn scan_predicate(num_conjuncts: usize) -> Predicate {
 pub struct ScanConfig {
     num_rows: u32,
     select_mix: f64,
-    update_mix: f64,
     range: u8,
     num_conjuncts: usize,
 }
 
 impl ScanConfig {
-    pub fn new(
-        num_rows: u32,
-        select_mix: f64,
-        update_mix: f64,
-        range: u8,
-        num_conjuncts: usize,
-    ) -> ScanConfig {
-        assert_eq!(select_mix + update_mix, 1.0);
+    pub fn new(num_rows: u32, select_mix: f64, range: u8, num_conjuncts: usize) -> ScanConfig {
+        assert!(select_mix >= 0.0 && select_mix <= 1.0);
 
         ScanConfig {
             num_rows,
             select_mix,
-            update_mix,
             range,
             num_conjuncts,
         }
