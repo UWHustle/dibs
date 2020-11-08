@@ -6,14 +6,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub trait YCSBServer {
+pub trait YCSBConnection {
     /// Get user.
     /// ```sql
     /// SELECT field
     /// FROM users
     /// WHERE id = ?;
     /// ```
-    fn select_user(&self, field: usize, user_id: u32) -> Vec<u8>;
+    fn select_user(&mut self, field: usize, user_id: u32) -> Vec<u8>;
 
     /// Update user.
     /// ```sql
@@ -21,7 +21,7 @@ pub trait YCSBServer {
     /// SET field = ?
     /// WHERE id = ?;
     /// ```
-    fn update_user(&self, field: usize, data: &[u8], user_id: u32);
+    fn update_user(&mut self, field: usize, data: &[u8], user_id: u32);
 }
 
 #[derive(Clone)]
@@ -33,12 +33,7 @@ pub struct YCSBConfig {
 }
 
 impl YCSBConfig {
-    pub fn new(
-        num_rows: u32,
-        num_fields: usize,
-        field_size: usize,
-        select_mix: f64,
-    ) -> YCSBConfig {
+    pub fn new(num_rows: u32, num_fields: usize, field_size: usize, select_mix: f64) -> YCSBConfig {
         assert!(select_mix >= 0.0 && select_mix <= 1.0);
 
         YCSBConfig {
@@ -86,27 +81,23 @@ pub fn dibs(num_fields: usize, optimization: OptimizationLevel) -> DibsConnector
     DibsConnector::new(dibs, optimization, templates, Duration::from_secs(60))
 }
 
-pub struct YCSBClient<S> {
+pub struct YCSBClient<C> {
     config: YCSBConfig,
     dibs: Arc<DibsConnector>,
-    server: Arc<S>,
+    conn: C,
 }
 
-impl<S> YCSBClient<S> {
-    pub fn new(config: YCSBConfig, dibs: Arc<DibsConnector>, server: Arc<S>) -> YCSBClient<S> {
-        YCSBClient {
-            config,
-            dibs,
-            server,
-        }
+impl<C> YCSBClient<C> {
+    pub fn new(config: YCSBConfig, dibs: Arc<DibsConnector>, conn: C) -> YCSBClient<C> {
+        YCSBClient { config, dibs, conn }
     }
 }
 
-impl<S> Client for YCSBClient<S>
+impl<C> Client for YCSBClient<C>
 where
-    S: YCSBServer,
+    C: YCSBConnection,
 {
-    fn execute_transaction(&self, transaction_id: usize) {
+    fn process(&mut self, transaction_id: usize) {
         let mut rng = rand::thread_rng();
 
         let transaction_type = rng.gen::<f64>();
@@ -121,7 +112,7 @@ where
                 vec![Value::Integer(user_id as usize)],
             );
 
-            self.server.select_user(field, user_id);
+            self.conn.select_user(field, user_id);
         } else {
             // Update user.
             let data = (0..self.config.field_size)
@@ -134,7 +125,9 @@ where
                 vec![Value::Integer(user_id as usize)],
             );
 
-            self.server.update_user(field, &data, user_id);
+            self.conn.update_user(field, &data, user_id);
         }
     }
 }
+
+unsafe impl<C> Send for YCSBClient<C> {}

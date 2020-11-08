@@ -19,7 +19,7 @@ where
         .into_iter()
         .cycle()
         .zip(clients)
-        .map(|(id, client)| {
+        .map(|(id, mut client)| {
             let transaction_counter = Arc::clone(&transaction_counter);
             let terminate = Arc::clone(&terminate);
 
@@ -28,7 +28,7 @@ where
 
                 while !terminate.load(Ordering::Relaxed) {
                     let transaction_id = transaction_counter.fetch_add(1, Ordering::Relaxed);
-                    client.execute_transaction(transaction_id);
+                    client.process(transaction_id);
                 }
             })
         })

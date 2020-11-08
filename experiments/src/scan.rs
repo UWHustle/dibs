@@ -164,7 +164,7 @@ impl<S> Client for ScanClient<S>
 where
     S: ScanServer,
 {
-    fn execute_transaction(&self, transaction_id: usize) {
+    fn process(&mut self, transaction_id: usize) {
         let mut rng = rand::thread_rng();
 
         let transaction_type = rng.gen::<f64>();

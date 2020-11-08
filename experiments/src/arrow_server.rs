@@ -1,6 +1,6 @@
 use crate::scan::{ScanConfig, ScanServer};
-use crate::tatp::{TATPConfig, TATPServer};
-use crate::ycsb::YCSBServer;
+use crate::tatp::{TATPConfig, TATPConnection};
+use crate::ycsb::YCSBConnection;
 use arrow::array::{
     ArrayBuilder, BooleanArray, BooleanBuilder, FixedSizeBinaryArray, FixedSizeBinaryBuilder,
     PrimitiveArrayOps, UInt32Array, UInt32Builder, UInt8Array, UInt8Builder,
@@ -9,8 +9,7 @@ use fnv::FnvHashMap;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use std::collections::hash_map::Entry;
-use std::convert::TryInto;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 struct Subscriber {
     col_s_id: UInt32Array,
@@ -336,21 +335,21 @@ impl CallForwarding {
     }
 }
 
-pub struct ArrowTATPServer {
+pub struct ArrowTATPDatabase {
     subscriber: Subscriber,
     access_info: AccessInfo,
     special_facility: SpecialFacility,
     call_forwarding: CallForwarding,
 }
 
-impl ArrowTATPServer {
-    pub fn new(config: &TATPConfig) -> ArrowTATPServer {
+impl ArrowTATPDatabase {
+    pub fn new(config: &TATPConfig) -> ArrowTATPDatabase {
         let subscriber = Subscriber::new(config.get_num_rows());
         let access_info = AccessInfo::new(&subscriber);
         let special_facility = SpecialFacility::new(&subscriber);
         let call_forwarding = CallForwarding::new(&special_facility);
 
-        ArrowTATPServer {
+        ArrowTATPDatabase {
             subscriber,
             access_info,
             special_facility,
@@ -359,28 +358,42 @@ impl ArrowTATPServer {
     }
 }
 
-impl TATPServer for ArrowTATPServer {
-    fn get_subscriber_data(&self, s_id: u32) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32) {
-        self.subscriber.get_row_data(self.subscriber.index[&s_id])
+pub struct ArrowTATPConnection {
+    db: Arc<ArrowTATPDatabase>,
+}
+
+impl ArrowTATPConnection {
+    pub fn new(db: Arc<ArrowTATPDatabase>) -> ArrowTATPConnection {
+        ArrowTATPConnection { db }
+    }
+}
+
+impl TATPConnection for ArrowTATPConnection {
+    fn get_subscriber_data(&mut self, s_id: u32) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32) {
+        self.db
+            .subscriber
+            .get_row_data(self.db.subscriber.index[&s_id])
     }
 
     fn get_new_destination(
-        &self,
+        &mut self,
         s_id: u32,
         sf_type: u8,
         start_time: u8,
         end_time: u8,
-    ) -> Vec<[u8; 15]> {
+    ) -> Vec<String> {
         let mut result = vec![];
 
         if let Some(sf_row) = self
+            .db
             .special_facility
             .index
             .get(&s_id)
             .and_then(|m| m.get(&sf_type))
         {
-            if self.special_facility.col_is_active.value(*sf_row) {
+            if self.db.special_facility.col_is_active.value(*sf_row) {
                 if let Some(cf_rows) = self
+                    .db
                     .call_forwarding
                     .get_index_partition(s_id)
                     .lock()
@@ -389,14 +402,13 @@ impl TATPServer for ArrowTATPServer {
                 {
                     for (cf_start_time, cf_row) in cf_rows {
                         if *cf_start_time <= start_time
-                            && end_time < self.call_forwarding.end_time.value(*cf_row)
+                            && end_time < self.db.call_forwarding.end_time.value(*cf_row)
                         {
                             result.push(
-                                self.call_forwarding
-                                    .numberx
-                                    .value(*cf_row)
-                                    .try_into()
-                                    .unwrap(),
+                                String::from_utf8(
+                                    self.db.call_forwarding.numberx.value(*cf_row).to_vec(),
+                                )
+                                .unwrap(),
                             );
                         }
                     }
@@ -407,24 +419,26 @@ impl TATPServer for ArrowTATPServer {
         result
     }
 
-    fn get_access_data(&self, s_id: u32, ai_type: u8) -> Option<(u8, u8, [u8; 3], [u8; 5])> {
-        self.access_info.index.get(&(s_id, ai_type)).map(|row| {
+    fn get_access_data(&mut self, s_id: u32, ai_type: u8) -> Option<(u8, u8, String, String)> {
+        self.db.access_info.index.get(&(s_id, ai_type)).map(|row| {
             (
-                self.access_info.col_data1.value(*row),
-                self.access_info.col_data2.value(*row),
-                self.access_info.col_data3.value(*row).try_into().unwrap(),
-                self.access_info.col_data4.value(*row).try_into().unwrap(),
+                self.db.access_info.col_data1.value(*row),
+                self.db.access_info.col_data2.value(*row),
+                String::from_utf8(self.db.access_info.col_data3.value(*row).to_vec()).unwrap(),
+                String::from_utf8(self.db.access_info.col_data4.value(*row).to_vec()).unwrap(),
             )
         })
     }
 
-    fn update_subscriber_bit(&self, bit_1: bool, s_id: u32) {
-        self.subscriber
-            .update_row_bit(self.subscriber.index[&s_id], bit_1);
+    fn update_subscriber_bit(&mut self, bit_1: bool, s_id: u32) {
+        self.db
+            .subscriber
+            .update_row_bit(self.db.subscriber.index[&s_id], bit_1);
     }
 
-    fn update_special_facility_data(&self, data_a: u8, s_id: u32, sf_type: u8) {
+    fn update_special_facility_data(&mut self, data_a: u8, s_id: u32, sf_type: u8) {
         if let Some(row) = self
+            .db
             .special_facility
             .index
             .get(&s_id)
@@ -432,6 +446,7 @@ impl TATPServer for ArrowTATPServer {
         {
             unsafe {
                 let data_a_dst = self
+                    .db
                     .special_facility
                     .col_data_a
                     .raw_values()
@@ -442,27 +457,29 @@ impl TATPServer for ArrowTATPServer {
         }
     }
 
-    fn update_subscriber_location(&self, vlr_location: u32, s_id: u32) {
-        self.subscriber
-            .update_row_location(self.subscriber.index[&s_id], vlr_location);
+    fn update_subscriber_location(&mut self, vlr_location: u32, s_id: u32) {
+        self.db
+            .subscriber
+            .update_row_location(self.db.subscriber.index[&s_id], vlr_location);
     }
 
-    fn get_special_facility_types(&self, s_id: u32) -> Vec<u8> {
-        self.special_facility.index[&s_id]
+    fn get_special_facility_types(&mut self, s_id: u32) -> Vec<u8> {
+        self.db.special_facility.index[&s_id]
             .iter()
             .map(|(&sf_type, _)| sf_type)
             .collect()
     }
 
     fn insert_call_forwarding(
-        &self,
+        &mut self,
         s_id: u32,
         sf_type: u8,
         start_time: u8,
         end_time: u8,
-        numberx: [u8; 15],
+        numberx: &str,
     ) {
         if let Entry::Vacant(entry) = self
+            .db
             .call_forwarding
             .get_index_partition(s_id)
             .lock()
@@ -471,32 +488,39 @@ impl TATPServer for ArrowTATPServer {
             .or_insert(FnvHashMap::default())
             .entry(start_time)
         {
-            let row = self.call_forwarding.free.lock().unwrap().pop().unwrap();
+            let row = self.db.call_forwarding.free.lock().unwrap().pop().unwrap();
             entry.insert(row);
 
             unsafe {
-                let s_id_dst =
-                    self.call_forwarding.s_id.raw_values().offset(row as isize) as *mut u32;
+                let s_id_dst = self
+                    .db
+                    .call_forwarding
+                    .s_id
+                    .raw_values()
+                    .offset(row as isize) as *mut u32;
 
                 let sf_type_dst = self
+                    .db
                     .call_forwarding
                     .sf_type
                     .raw_values()
                     .offset(row as isize) as *mut u8;
 
                 let start_time_dst = self
+                    .db
                     .call_forwarding
                     .start_time
                     .raw_values()
                     .offset(row as isize) as *mut u8;
 
                 let end_time_dst = self
+                    .db
                     .call_forwarding
                     .end_time
                     .raw_values()
                     .offset(row as isize) as *mut u8;
 
-                let numberx_dst = self.call_forwarding.numberx.value(row).as_ptr() as *mut u8;
+                let numberx_dst = self.db.call_forwarding.numberx.value(row).as_ptr() as *mut u8;
 
                 *s_id_dst = s_id;
                 *sf_type_dst = sf_type;
@@ -507,8 +531,9 @@ impl TATPServer for ArrowTATPServer {
         }
     }
 
-    fn delete_call_forwarding(&self, s_id: u32, sf_type: u8, start_time: u8) {
+    fn delete_call_forwarding(&mut self, s_id: u32, sf_type: u8, start_time: u8) {
         if let Entry::Occupied(entry) = self
+            .db
             .call_forwarding
             .get_index_partition(s_id)
             .lock()
@@ -517,7 +542,8 @@ impl TATPServer for ArrowTATPServer {
             .or_insert(FnvHashMap::default())
             .entry(start_time)
         {
-            self.call_forwarding
+            self.db
+                .call_forwarding
                 .free
                 .lock()
                 .unwrap()
@@ -556,14 +582,14 @@ impl ScanServer for ArrowScanServer {
     }
 }
 
-pub struct ArrowYCSBServer {
+pub struct ArrowYCSBDatabase {
     _col_user_id: UInt32Array,
     col_fields: Vec<FixedSizeBinaryArray>,
     index: FnvHashMap<u32, usize>,
 }
 
-impl ArrowYCSBServer {
-    pub fn new(num_rows: u32, num_fields: usize, field_size: usize) -> ArrowYCSBServer {
+impl ArrowYCSBDatabase {
+    pub fn new(num_rows: u32, num_fields: usize, field_size: usize) -> ArrowYCSBDatabase {
         assert!(field_size > 0 && field_size <= i32::max_value() as usize);
 
         let mut rng = rand::thread_rng();
@@ -590,7 +616,7 @@ impl ArrowYCSBServer {
             index.insert(user_id, row);
         }
 
-        ArrowYCSBServer {
+        ArrowYCSBDatabase {
             _col_user_id: user_id_builder.finish(),
             col_fields: field_builders.into_iter().map(|mut b| b.finish()).collect(),
             index,
@@ -598,15 +624,25 @@ impl ArrowYCSBServer {
     }
 }
 
-impl YCSBServer for ArrowYCSBServer {
-    fn select_user(&self, field: usize, user_id: u32) -> Vec<u8> {
-        let row = self.index.get(&user_id).unwrap();
-        self.col_fields[field].value(*row).to_vec()
+pub struct ArrowYCSBConnection {
+    db: Arc<ArrowYCSBDatabase>,
+}
+
+impl ArrowYCSBConnection {
+    pub fn new(db: Arc<ArrowYCSBDatabase>) -> ArrowYCSBConnection {
+        ArrowYCSBConnection { db }
+    }
+}
+
+impl YCSBConnection for ArrowYCSBConnection {
+    fn select_user(&mut self, field: usize, user_id: u32) -> Vec<u8> {
+        let row = self.db.index.get(&user_id).unwrap();
+        self.db.col_fields[field].value(*row).to_vec()
     }
 
-    fn update_user(&self, field: usize, data: &[u8], user_id: u32) {
-        let row = self.index.get(&user_id).unwrap();
-        let value = self.col_fields[field].value(*row);
+    fn update_user(&mut self, field: usize, data: &[u8], user_id: u32) {
+        let row = self.db.index.get(&user_id).unwrap();
+        let value = self.db.col_fields[field].value(*row);
 
         assert_eq!(data.len(), value.len());
 

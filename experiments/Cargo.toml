@@ -8,8 +8,10 @@ edition = "2018"
 
 [dependencies]
 dibs = { path = "../dibs" }
-rand = "0.7.3"
-arrow = "2.0.0"
+rand = "0.7"
+arrow = "2.0"
+rusqlite = "0.24"
 fnv = "1.0.7"
-core_affinity = "0.5.10"
+core_affinity = "0.5"
 clap = "2.33"
+itertools = "0.9"

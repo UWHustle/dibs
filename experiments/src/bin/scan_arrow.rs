@@ -3,7 +3,7 @@ use dibs_experiments::scan::{ScanConfig, ScanClient};
 use dibs_experiments::{scan, OptimizationLevel, runner};
 use std::str::FromStr;
 use std::sync::Arc;
-use dibs_experiments::arrow::ArrowScanServer;
+use dibs_experiments::arrow_server::ArrowScanServer;
 
 fn main() {
     let matches = App::new("Scans on Arrow")

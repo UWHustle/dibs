@@ -7,14 +7,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub trait TATPServer {
+pub trait TATPConnection {
     /// Get subscriber data by ID.
     /// ```sql
     /// SELECT *
     /// FROM subscriber
     /// WHERE s_id = ?;
     /// ```
-    fn get_subscriber_data(&self, s_id: u32) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32);
+    fn get_subscriber_data(&mut self, s_id: u32) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32);
 
     /// Get new destination.
     /// ```sql
@@ -30,12 +30,12 @@ pub trait TATPServer {
     ///         AND ? < cf.end_time);
     /// ```
     fn get_new_destination(
-        &self,
+        &mut self,
         s_id: u32,
         sf_type: u8,
         start_time: u8,
         end_time: u8,
-    ) -> Vec<[u8; 15]>;
+    ) -> Vec<String>;
 
     /// Get access data.
     /// ```sql
@@ -43,7 +43,7 @@ pub trait TATPServer {
     /// FROM access_info
     /// WHERE s_id = ? AND ai_type = ?;
     /// ```
-    fn get_access_data(&self, s_id: u32, ai_type: u8) -> Option<(u8, u8, [u8; 3], [u8; 5])>;
+    fn get_access_data(&mut self, s_id: u32, ai_type: u8) -> Option<(u8, u8, String, String)>;
 
     /// Update subscriber bit.
     /// ```sql
@@ -51,14 +51,14 @@ pub trait TATPServer {
     /// SET bit_1 = ?
     /// WHERE s_id = ?;
     /// ```
-    fn update_subscriber_bit(&self, bit_1: bool, s_id: u32);
+    fn update_subscriber_bit(&mut self, bit_1: bool, s_id: u32);
 
     /// Update special facility data.
     /// ```sql
     /// UPDATE special_facility
     /// SET data_a = ?
-    /// WHERE s_id = ? AND sf_type = ?
-    fn update_special_facility_data(&self, data_a: u8, s_id: u32, sf_type: u8);
+    /// WHERE s_id = ? AND sf_type = ?;
+    fn update_special_facility_data(&mut self, data_a: u8, s_id: u32, sf_type: u8);
 
     /// Update subscriber location.
     /// ```sql
@@ -66,7 +66,7 @@ pub trait TATPServer {
     /// SET vlr_location = ?
     /// WHERE s_id = ?;
     /// ```
-    fn update_subscriber_location(&self, vlr_location: u32, s_id: u32);
+    fn update_subscriber_location(&mut self, vlr_location: u32, s_id: u32);
 
     /// Get special facility types.
     /// ```sql
@@ -74,7 +74,7 @@ pub trait TATPServer {
     /// FROM special_facility
     /// WHERE s_id = ?;
     /// ```
-    fn get_special_facility_types(&self, s_id: u32) -> Vec<u8>;
+    fn get_special_facility_types(&mut self, s_id: u32) -> Vec<u8>;
 
     /// Insert call forwarding.
     /// ```sql
@@ -82,12 +82,12 @@ pub trait TATPServer {
     /// VALUES (?, ?, ?, ?, ?);
     /// ```
     fn insert_call_forwarding(
-        &self,
+        &mut self,
         s_id: u32,
         sf_type: u8,
         start_time: u8,
         end_time: u8,
-        numberx: [u8; 15],
+        numberx: &str,
     );
 
     /// Delete call forwarding.
@@ -95,7 +95,7 @@ pub trait TATPServer {
     /// DELETE FROM call_forwarding
     /// WHERE s_id = ? AND sf_type = ? AND start_time = ?;
     /// ```
-    fn delete_call_forwarding(&self, s_id: u32, sf_type: u8, start_time: u8);
+    fn delete_call_forwarding(&mut self, s_id: u32, sf_type: u8, start_time: u8);
 }
 
 #[derive(Clone)]
@@ -125,11 +125,11 @@ impl TATPConfig {
         (rng.gen_range(0, self.a_val + 1) | rng.gen_range(1, self.num_rows + 1)) % self.num_rows + 1
     }
 
-    fn gen_numberx(&self, rng: &mut ThreadRng) -> [u8; 15] {
-        let mut numberx = [0; 15];
+    fn gen_numberx(&self, rng: &mut ThreadRng) -> String {
+        let mut numberx = vec![0; 15];
         let s = rng.gen_range(1, self.num_rows + 1).to_string();
         numberx[(15 - s.len())..].copy_from_slice(s.as_bytes());
-        numberx
+        String::from_utf8(numberx).unwrap()
     }
 }
 
@@ -232,27 +232,30 @@ pub fn dibs(optimization: OptimizationLevel) -> DibsConnector {
     DibsConnector::new(dibs, optimization, templates, Duration::from_secs(60))
 }
 
-pub struct TATPClient<S> {
-    config: TATPConfig,
-    dibs: Arc<DibsConnector>,
-    server: Arc<S>,
+pub fn uppercase_alphabetic_string(len: usize, rng: &mut ThreadRng) -> String {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    (0..len)
+        .map(|_| CHARSET[rng.gen_range(0, CHARSET.len())] as char)
+        .collect()
 }
 
-impl<S> TATPClient<S> {
-    pub fn new(config: TATPConfig, dibs: Arc<DibsConnector>, server: Arc<S>) -> TATPClient<S> {
-        TATPClient {
-            config,
-            dibs,
-            server,
-        }
+pub struct TATPClient<C> {
+    config: TATPConfig,
+    dibs: Arc<DibsConnector>,
+    conn: C,
+}
+
+impl<C> TATPClient<C> {
+    pub fn new(config: TATPConfig, dibs: Arc<DibsConnector>, conn: C) -> TATPClient<C> {
+        TATPClient { config, dibs, conn }
     }
 }
 
-impl<S> Client for TATPClient<S>
+impl<C> Client for TATPClient<C>
 where
-    S: TATPServer,
+    C: TATPConnection,
 {
-    fn execute_transaction(&self, transaction_id: usize) {
+    fn process(&mut self, transaction_id: usize) {
         let mut rng = rand::thread_rng();
 
         let transaction_type = rng.gen::<f64>();
@@ -265,7 +268,7 @@ where
                 .dibs
                 .acquire(transaction_id, 0, vec![Value::Integer(s_id as usize)]);
 
-            self.server.get_subscriber_data(s_id);
+            self.conn.get_subscriber_data(s_id);
         } else if transaction_type < 0.45 {
             // GET_NEW_DESTINATION
             // Probability: 10%
@@ -293,7 +296,7 @@ where
                 ],
             );
 
-            self.server
+            self.conn
                 .get_new_destination(s_id, sf_type, start_time, end_time);
         } else if transaction_type < 0.80 {
             // GET_ACCESS_DATA
@@ -309,7 +312,7 @@ where
                 ],
             );
 
-            self.server.get_access_data(s_id, ai_type);
+            self.conn.get_access_data(s_id, ai_type);
         } else if transaction_type < 0.82 {
             // UPDATE_SUBSCRIBER_DATA
             // Probability: 2%
@@ -330,8 +333,8 @@ where
                 ],
             );
 
-            self.server.update_subscriber_bit(bit_1, s_id);
-            self.server
+            self.conn.update_subscriber_bit(bit_1, s_id);
+            self.conn
                 .update_special_facility_data(data_a, s_id, sf_type);
         } else if transaction_type < 0.96 {
             // UPDATE_LOCATION
@@ -342,7 +345,7 @@ where
                 .dibs
                 .acquire(transaction_id, 6, vec![Value::Integer(s_id as usize)]);
 
-            self.server.update_subscriber_location(vlr_location, s_id);
+            self.conn.update_subscriber_location(vlr_location, s_id);
         } else if transaction_type < 0.98 {
             // INSERT_CALL_FORWARDING
             // Probability: 2%
@@ -365,9 +368,9 @@ where
                 ],
             );
 
-            self.server.get_special_facility_types(s_id);
-            self.server
-                .insert_call_forwarding(s_id, sf_type, start_time, end_time, numberx);
+            self.conn.get_special_facility_types(s_id);
+            self.conn
+                .insert_call_forwarding(s_id, sf_type, start_time, end_time, &numberx);
         } else {
             // DELETE_CALL_FORWARDING
             // Probability: 2%
@@ -384,8 +387,9 @@ where
                 ],
             );
 
-            self.server
-                .delete_call_forwarding(s_id, sf_type, start_time);
+            self.conn.delete_call_forwarding(s_id, sf_type, start_time);
         }
     }
 }
+
+unsafe impl<C> Send for TATPClient<C> {}

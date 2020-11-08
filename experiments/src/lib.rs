@@ -3,14 +3,15 @@ use dibs::{Dibs, Request, RequestGuard, RequestTemplate, RequestVariant};
 use std::str::FromStr;
 use std::time::Duration;
 
-pub mod arrow;
+pub mod arrow_server;
 pub mod runner;
 pub mod scan;
+pub mod sqlite_server;
 pub mod tatp;
 pub mod ycsb;
 
 pub trait Client {
-    fn execute_transaction(&self, transaction_id: usize);
+    fn process(&mut self, transaction_id: usize);
 }
 
 #[derive(Clone, PartialEq)]

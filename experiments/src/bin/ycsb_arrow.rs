@@ -1,5 +1,5 @@
 use clap::{App, Arg};
-use dibs_experiments::arrow::ArrowYCSBServer;
+use dibs_experiments::arrow_server::{ArrowYCSBConnection, ArrowYCSBDatabase};
 use dibs_experiments::ycsb::{YCSBClient, YCSBConfig};
 use dibs_experiments::{runner, ycsb, OptimizationLevel};
 use std::str::FromStr;
@@ -29,10 +29,16 @@ fn main() {
 
     let config = YCSBConfig::new(num_rows, num_fields, field_size, select_mix);
     let dibs = Arc::new(ycsb::dibs(num_fields, optimization));
-    let server = Arc::new(ArrowYCSBServer::new(num_rows, num_fields, field_size));
+    let db = Arc::new(ArrowYCSBDatabase::new(num_rows, num_fields, field_size));
 
     let clients = (0..num_workers)
-        .map(|_| YCSBClient::new(config.clone(), Arc::clone(&dibs), Arc::clone(&server)))
+        .map(|_| {
+            YCSBClient::new(
+                config.clone(),
+                Arc::clone(&dibs),
+                ArrowYCSBConnection::new(Arc::clone(&db)),
+            )
+        })
         .collect();
 
     runner::run(clients);

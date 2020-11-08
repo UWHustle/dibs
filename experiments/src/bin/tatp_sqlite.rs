@@ -1,12 +1,12 @@
 use clap::{App, Arg};
-use dibs_experiments::arrow_server::{ArrowTATPConnection, ArrowTATPDatabase};
+use dibs_experiments::sqlite_server::SQLiteTATPConnection;
 use dibs_experiments::tatp::{TATPClient, TATPConfig};
-use dibs_experiments::{runner, tatp, OptimizationLevel};
+use dibs_experiments::{runner, sqlite_server, tatp, OptimizationLevel};
 use std::str::FromStr;
 use std::sync::Arc;
 
 fn main() {
-    let matches = App::new("TATP on Arrow")
+    let matches = App::new("TATP on SQLite")
         .arg(Arg::with_name("num_rows").required(true))
         .arg(
             Arg::with_name("optimization")
@@ -23,14 +23,15 @@ fn main() {
 
     let config = TATPConfig::new(num_rows);
     let dibs = Arc::new(tatp::dibs(optimization));
-    let db = Arc::new(ArrowTATPDatabase::new(&config));
+
+    sqlite_server::load_tatp("tatp.sqlite", num_rows);
 
     let clients = (0..num_workers)
         .map(|_| {
             TATPClient::new(
                 config.clone(),
                 Arc::clone(&dibs),
-                ArrowTATPConnection::new(Arc::clone(&db)),
+                SQLiteTATPConnection::new("tatp.sqlite"),
             )
         })
         .collect();
