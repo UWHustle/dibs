@@ -2,7 +2,7 @@ use clap::{App, Arg};
 use dibs::OptimizationLevel;
 use dibs_experiments::benchmarks::ycsb;
 use dibs_experiments::benchmarks::ycsb::YCSBGenerator;
-use dibs_experiments::systems;
+use dibs_experiments::{systems, runner};
 use dibs_experiments::systems::sqlite::SQLiteYCSBConnection;
 use dibs_experiments::worker::{
     GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, SharedState, Worker,
@@ -62,6 +62,8 @@ fn main() {
             generator,
             SQLiteYCSBConnection::new("ycsb.sqlite"),
             num_transactions_per_group,
-        )))
+        )));
     }
+
+    runner::run(workers, shared_state);
 }
