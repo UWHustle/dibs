@@ -1,13 +1,12 @@
-use crate::{Client, DibsConnector, OptimizationLevel};
+use crate::{Generator, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
-use dibs::{Dibs, RequestTemplate};
+use dibs::{AcquireError, Dibs, OptimizationLevel, RequestGuard, RequestTemplate};
 use rand::rngs::ThreadRng;
-use rand::Rng;
+use rand::{thread_rng, Rng};
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::time::Duration;
 
-pub trait ScanServer {
+pub trait ScanConnection {
     /// Get subscriber data scan.
     /// ```sql
     /// SELECT *
@@ -46,49 +45,75 @@ pub trait ScanServer {
     fn update_subscriber_location_scan(&self, vlr_location: u32, byte2: [(u8, u8, u8, u8); 10]);
 }
 
-fn scan_predicate(num_conjuncts: usize) -> Predicate {
-    assert!(num_conjuncts <= 10);
-
-    Predicate::conjunction(
-        (0..num_conjuncts)
-            .map(|i| {
-                Predicate::disjunction(vec![
-                    Predicate::conjunction(vec![
-                        Predicate::comparison(ComparisonOperator::Ge, i + 21, i * 4),
-                        Predicate::comparison(ComparisonOperator::Le, i + 21, i * 4 + 1),
-                    ]),
-                    Predicate::conjunction(vec![
-                        Predicate::comparison(ComparisonOperator::Ge, i + 21, i * 4 + 2),
-                        Predicate::comparison(ComparisonOperator::Le, i + 21, i * 4 + 3),
-                    ]),
-                ])
-            })
-            .collect(),
-    )
+pub enum ScanProcedure {
+    GetSubscriberDataScan {
+        byte2: [(u8, u8, u8, u8); 10],
+    },
+    UpdateSubscriberLocationScan {
+        vlr_location: u32,
+        byte2: [(u8, u8, u8, u8); 10],
+    },
 }
 
-#[derive(Clone)]
-pub struct ScanConfig {
-    num_rows: u32,
-    select_mix: f64,
-    range: u8,
-    num_conjuncts: usize,
-}
+fn byte2_to_arguments(byte2: &[(u8, u8, u8, u8); 10]) -> Vec<Value> {
+    let mut arguments = Vec::with_capacity(40);
 
-impl ScanConfig {
-    pub fn new(num_rows: u32, select_mix: f64, range: u8, num_conjuncts: usize) -> ScanConfig {
-        assert!(select_mix >= 0.0 && select_mix <= 1.0);
-
-        ScanConfig {
-            num_rows,
-            select_mix,
-            range,
-            num_conjuncts,
+    for b in byte2 {
+        for v in &[b.0, b.1, b.2, b.3] {
+            arguments.push(Value::Integer(*v as usize))
         }
     }
 
-    pub fn get_num_rows(&self) -> u32 {
-        self.num_rows
+    arguments
+}
+
+impl<C: ScanConnection> Procedure<C> for ScanProcedure {
+    fn is_read_only(&self) -> bool {
+        match self {
+            ScanProcedure::GetSubscriberDataScan { .. } => true,
+            ScanProcedure::UpdateSubscriberLocationScan { .. } => false,
+        }
+    }
+
+    fn execute(
+        &self,
+        group_id: usize,
+        transaction_id: usize,
+        dibs: &Dibs,
+        connection: &mut C,
+    ) -> Result<Vec<RequestGuard>, AcquireError> {
+        match self {
+            ScanProcedure::GetSubscriberDataScan { byte2 } => {
+                let guard =
+                    dibs.acquire(group_id, transaction_id, 0, byte2_to_arguments(&byte2))?;
+
+                connection.get_subscriber_data_scan(*byte2);
+
+                Ok(vec![guard])
+            }
+            ScanProcedure::UpdateSubscriberLocationScan {
+                vlr_location,
+                byte2,
+            } => {
+                let guard =
+                    dibs.acquire(group_id, transaction_id, 1, byte2_to_arguments(&byte2))?;
+
+                connection.update_subscriber_location_scan(*vlr_location, *byte2);
+
+                Ok(vec![guard])
+            }
+        }
+    }
+}
+
+pub struct ScanGenerator {
+    select_mix: f64,
+    range: u8,
+}
+
+impl ScanGenerator {
+    pub fn new(select_mix: f64, range: u8) -> ScanGenerator {
+        ScanGenerator { select_mix, range }
     }
 
     fn gen_byte2(&self, rng: &mut ThreadRng) -> [(u8, u8, u8, u8); 10] {
@@ -105,90 +130,57 @@ impl ScanConfig {
     }
 }
 
-fn byte2_to_arguments(byte2: &[(u8, u8, u8, u8); 10]) -> Vec<Value> {
-    let mut arguments = Vec::with_capacity(40);
+impl Generator<ScanProcedure> for ScanGenerator {
+    fn next(&self) -> ScanProcedure {
+        let mut rng = thread_rng();
 
-    for b in byte2 {
-        for v in &[b.0, b.1, b.2, b.3] {
-            arguments.push(Value::Integer(*v as usize))
+        let transaction_type = rng.gen::<f64>();
+
+        if transaction_type < self.select_mix {
+            let byte2 = self.gen_byte2(&mut rng);
+
+            ScanProcedure::GetSubscriberDataScan { byte2 }
+        } else {
+            let vlr_location = rng.gen();
+            let byte2 = self.gen_byte2(&mut rng);
+
+            ScanProcedure::UpdateSubscriberLocationScan {
+                vlr_location,
+                byte2,
+            }
         }
     }
-
-    arguments
 }
 
-pub fn dibs(num_conjuncts: usize, optimization: OptimizationLevel) -> DibsConnector {
+pub fn dibs(num_conjuncts: usize, optimization: OptimizationLevel) -> Dibs {
+    let scan_predicate = Predicate::conjunction(
+        (0..num_conjuncts)
+            .map(|i| {
+                Predicate::disjunction(vec![
+                    Predicate::conjunction(vec![
+                        Predicate::comparison(ComparisonOperator::Ge, i + 21, i * 4),
+                        Predicate::comparison(ComparisonOperator::Le, i + 21, i * 4 + 1),
+                    ]),
+                    Predicate::conjunction(vec![
+                        Predicate::comparison(ComparisonOperator::Ge, i + 21, i * 4 + 2),
+                        Predicate::comparison(ComparisonOperator::Le, i + 21, i * 4 + 3),
+                    ]),
+                ])
+            })
+            .collect(),
+    );
+
     let templates = vec![
         // (0) Get subscriber data scan.
-        RequestTemplate::new(
-            0,
-            (0..33).collect(),
-            HashSet::new(),
-            scan_predicate(num_conjuncts),
-        ),
+        RequestTemplate::new(0, (0..33).collect(), HashSet::new(), scan_predicate.clone()),
         // (1) Update subscriber location scan.
         RequestTemplate::new(
             0,
             (21..31).collect(),
             [32].iter().cloned().collect(),
-            scan_predicate(num_conjuncts),
+            scan_predicate,
         ),
     ];
 
-    let dibs = Dibs::new(
-        &[None],
-        &templates,
-        optimization != OptimizationLevel::Ungrouped,
-    );
-
-    DibsConnector::new(dibs, optimization, templates, Duration::from_secs(60))
-}
-
-pub struct ScanClient<S> {
-    config: ScanConfig,
-    dibs: Arc<DibsConnector>,
-    server: Arc<S>,
-}
-
-impl<S> ScanClient<S> {
-    pub fn new(config: ScanConfig, dibs: Arc<DibsConnector>, server: Arc<S>) -> ScanClient<S> {
-        ScanClient {
-            config,
-            dibs,
-            server,
-        }
-    }
-}
-
-impl<S> Client for ScanClient<S>
-where
-    S: ScanServer,
-{
-    fn process(&mut self, transaction_id: usize) {
-        let mut rng = rand::thread_rng();
-
-        let transaction_type = rng.gen::<f64>();
-
-        if transaction_type < self.config.select_mix {
-            // Get subscriber data scan.
-            let byte2 = self.config.gen_byte2(&mut rng);
-
-            let _guard = self
-                .dibs
-                .acquire(transaction_id, 0, byte2_to_arguments(&byte2));
-
-            self.server.get_subscriber_data_scan(byte2);
-        } else {
-            // Update subscriber location scan.
-            let vlr_location = rng.gen();
-            let byte2 = self.config.gen_byte2(&mut rng);
-
-            let _guard = self
-                .dibs
-                .acquire(transaction_id, 1, byte2_to_arguments(&byte2));
-
-            self.server
-                .update_subscriber_location_scan(vlr_location, byte2);
-        }
-    }
+    Dibs::new(&[None], &templates, optimization, Duration::from_secs(60))
 }

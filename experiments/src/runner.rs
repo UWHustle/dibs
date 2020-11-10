@@ -1,48 +1,40 @@
-use crate::Client;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use crate::worker::{SharedState, Worker};
+use crate::{Generator, Procedure};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-pub fn run<C>(clients: Vec<C>)
+pub fn run<G, P, C>(workers: Vec<Worker<G, P, C>>, shared_state: Arc<SharedState>)
 where
-    C: 'static + Client + Send,
+    G: 'static + Generator<P> + Send,
+    P: 'static + Procedure<C> + Send,
+    C: 'static + Send,
 {
     let warmup_duration = Duration::from_secs(5);
     let measurement_duration = Duration::from_secs(10);
-
-    let transaction_counter = Arc::new(AtomicUsize::new(0));
-    let terminate = Arc::new(AtomicBool::new(false));
 
     let handles = core_affinity::get_core_ids()
         .unwrap()
         .into_iter()
         .cycle()
-        .zip(clients)
-        .map(|(id, mut client)| {
-            let transaction_counter = Arc::clone(&transaction_counter);
-            let terminate = Arc::clone(&terminate);
-
+        .zip(workers)
+        .map(|(core_id, mut worker)| {
             thread::spawn(move || {
-                core_affinity::set_for_current(id);
-
-                while !terminate.load(Ordering::Relaxed) {
-                    let transaction_id = transaction_counter.fetch_add(1, Ordering::Relaxed);
-                    client.process(transaction_id);
-                }
+                core_affinity::set_for_current(core_id);
+                worker.run();
             })
         })
         .collect::<Vec<_>>();
 
     thread::sleep(warmup_duration);
 
-    let start = transaction_counter.load(Ordering::Relaxed);
+    let start = shared_state.get_commit_count();
 
     thread::sleep(measurement_duration);
 
-    let stop = transaction_counter.load(Ordering::Relaxed);
+    let stop = shared_state.get_commit_count();
 
-    terminate.store(true, Ordering::Relaxed);
+    shared_state.terminate();
 
     for handle in handles {
         handle.join().unwrap();

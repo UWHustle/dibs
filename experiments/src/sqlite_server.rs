@@ -1,9 +1,9 @@
-use crate::tatp;
 use crate::tatp::TATPConnection;
+use crate::{tatp, Connection};
 use itertools::Itertools;
 use rand::seq::SliceRandom;
 use rand::Rng;
-use rusqlite::{params, Connection, Statement};
+use rusqlite::{params, Statement};
 use std::path::Path;
 
 pub fn load_tatp<P>(path: P, num_rows: u32)
@@ -12,7 +12,7 @@ where
 {
     let mut rng = rand::thread_rng();
 
-    let conn = Connection::open(path).unwrap();
+    let conn = rusqlite::Connection::open(path).unwrap();
 
     // unsafe {
     //     libsqlite3_sys::sqlite3_config(libsqlite3_sys::SQLITE_CONFIG_MULTITHREAD);
@@ -190,8 +190,44 @@ where
     .unwrap();
 }
 
+struct SQLiteBaseConnection<'a> {
+    begin_stmt: Statement<'a>,
+    commit_stmt: Statement<'a>,
+    rollback_stmt: Statement<'a>,
+    savepoint_stmt: Statement<'a>,
+}
+
+impl<'a> SQLiteBaseConnection<'a> {
+    fn new(conn: *mut rusqlite::Connection) -> SQLiteBaseConnection<'a> {
+        let begin_stmt = unsafe { conn.as_ref() }.unwrap().prepare("BEGIN;").unwrap();
+
+        let commit_stmt = unsafe { conn.as_ref() }
+            .unwrap()
+            .prepare("COMMIT;")
+            .unwrap();
+
+        let rollback_stmt = unsafe { conn.as_ref() }
+            .unwrap()
+            .prepare("ROLLBACK TO 'X';")
+            .unwrap();
+
+        let savepoint_stmt = unsafe { conn.as_ref() }
+            .unwrap()
+            .prepare("SAVEPOINT 'X';")
+            .unwrap();
+
+        SQLiteBaseConnection {
+            begin_stmt,
+            commit_stmt,
+            rollback_stmt,
+            savepoint_stmt,
+        }
+    }
+}
+
 pub struct SQLiteTATPConnection<'a> {
-    _conn: Box<Connection>,
+    _conn: Box<rusqlite::Connection>,
+    base: SQLiteBaseConnection<'a>,
     get_subscriber_data_stmt: Statement<'a>,
     get_new_destination_stmt: Statement<'a>,
     get_access_data_stmt: Statement<'a>,
@@ -208,7 +244,9 @@ impl<'a> SQLiteTATPConnection<'a> {
     where
         P: AsRef<Path>,
     {
-        let conn = Box::into_raw(Box::new(Connection::open(path).unwrap()));
+        let conn = Box::into_raw(Box::new(rusqlite::Connection::open(path).unwrap()));
+
+        let base = SQLiteBaseConnection::new(conn);
 
         let get_subscriber_data_stmt = unsafe { conn.as_ref() }
             .unwrap()
@@ -298,6 +336,7 @@ impl<'a> SQLiteTATPConnection<'a> {
 
         SQLiteTATPConnection {
             _conn: unsafe { Box::from_raw(conn) },
+            base,
             get_subscriber_data_stmt,
             get_new_destination_stmt,
             get_access_data_stmt,
@@ -308,6 +347,24 @@ impl<'a> SQLiteTATPConnection<'a> {
             insert_call_forwarding_stmt,
             delete_call_forwarding_stmt,
         }
+    }
+}
+
+impl Connection for SQLiteTATPConnection<'_> {
+    fn begin(&mut self) {
+        self.base.begin_stmt.execute(params![]).unwrap();
+    }
+
+    fn commit(&mut self) {
+        self.base.commit_stmt.execute(params![]).unwrap();
+    }
+
+    fn rollback(&mut self) {
+        self.base.rollback_stmt.execute(params![]).unwrap();
+    }
+
+    fn savepoint(&mut self) {
+        self.base.savepoint_stmt.execute(params![]).unwrap();
     }
 }
 
@@ -421,87 +478,4 @@ impl TATPConnection for SQLiteTATPConnection<'_> {
     }
 }
 
-// impl TATPServer for SQLiteTATPServer<'_> {
-//     fn get_subscriber_data(&self, s_id: u32) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32) {
-//         let mut get_subscriber_data_stmt_mut = self.get_subscriber_data_stmt.borrow_mut();
-//         let mut result = get_subscriber_data_stmt_mut.query(&[s_id]).unwrap();
-//         let row = result.next().unwrap().unwrap();
-//
-//         let mut bit = [false; 10];
-//         for i in 0..10 {
-//             bit[i] = row.get(i + 1).unwrap();
-//         }
-//
-//         let mut hex = [0; 10];
-//         for i in 0..10 {
-//             hex[i] = row.get(i + 11).unwrap();
-//         }
-//
-//         let mut byte2 = [0; 10];
-//         for i in 0..10 {
-//             byte2[i] = row.get(i + 21).unwrap();
-//         }
-//
-//         (bit, hex, byte2, row.get(31).unwrap(), row.get(32).unwrap())
-//     }
-//
-//     fn get_new_destination(
-//         &self,
-//         s_id: u32,
-//         sf_type: u8,
-//         start_time: u8,
-//         end_time: u8,
-//     ) -> Vec<[u8; 15]> {
-//         self.get_new_destination_stmt
-//             .borrow_mut()
-//             .query(params![s_id, sf_type, start_time, end_time])
-//             .unwrap()
-//             .map(|row| None)
-//             .collect()
-//             .unwrap();
-//
-//         // result.map(|row| )
-//         // self.get_new_destination_stmt
-//         //     .borrow_mut()
-//         //     .query_map(params![s_id, sf_type, start_time, end_time], |row| {
-//         //         row.get(0).unwrap()
-//         //     })
-//         //     .unwrap()
-//         //     .collect()
-//     }
-//
-//     fn get_access_data(&self, s_id: u32, ai_type: u8) -> Option<(u8, u8, [u8; 3], [u8; 5])> {
-//         unimplemented!()
-//     }
-//
-//     fn update_subscriber_bit(&self, bit_1: bool, s_id: u32) {
-//         unimplemented!()
-//     }
-//
-//     fn update_special_facility_data(&self, data_a: u8, s_id: u32, sf_type: u8) {
-//         unimplemented!()
-//     }
-//
-//     fn update_subscriber_location(&self, vlr_location: u32, s_id: u32) {
-//         unimplemented!()
-//     }
-//
-//     fn get_special_facility_types(&self, s_id: u32) -> Vec<u8> {
-//         unimplemented!()
-//     }
-//
-//     fn insert_call_forwarding(
-//         &self,
-//         s_id: u32,
-//         sf_type: u8,
-//         start_time: u8,
-//         end_time: u8,
-//         numberx: [u8; 15],
-//     ) {
-//         unimplemented!()
-//     }
-//
-//     fn delete_call_forwarding(&self, s_id: u32, sf_type: u8, start_time: u8) {
-//         unimplemented!()
-//     }
-// }
+unsafe impl Send for SQLiteTATPConnection<'_> {}

@@ -1,78 +1,35 @@
-use dibs::predicate::Value;
-use dibs::{Dibs, Request, RequestGuard, RequestTemplate, RequestVariant};
-use std::str::FromStr;
-use std::time::Duration;
+use dibs::{AcquireError, Dibs, OptimizationLevel, RequestGuard};
 
 pub mod arrow_server;
 pub mod runner;
 pub mod scan;
 pub mod sqlite_server;
 pub mod tatp;
+pub mod worker;
 pub mod ycsb;
 
-pub trait Client {
-    fn process(&mut self, transaction_id: usize);
-}
-
-#[derive(Clone, PartialEq)]
-pub enum OptimizationLevel {
-    Ungrouped,
-    Grouped,
-    Prepared,
-    Filtered,
-}
-
-impl FromStr for OptimizationLevel {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, ()> {
-        match s {
-            "ungrouped" => Ok(OptimizationLevel::Ungrouped),
-            "grouped" => Ok(OptimizationLevel::Grouped),
-            "prepared" => Ok(OptimizationLevel::Prepared),
-            "filtered" => Ok(OptimizationLevel::Filtered),
-            _ => Err(()),
-        }
-    }
-}
-
-pub struct DibsConnector {
-    dibs: Dibs,
-    optimization: OptimizationLevel,
-    templates: Vec<RequestTemplate>,
-    timeout: Duration,
-}
-
-impl DibsConnector {
-    fn new(
-        dibs: Dibs,
-        optimization: OptimizationLevel,
-        templates: Vec<RequestTemplate>,
-        timeout: Duration,
-    ) -> DibsConnector {
-        DibsConnector {
-            dibs,
-            optimization,
-            templates,
-            timeout,
-        }
-    }
-
-    fn acquire(
+pub trait Procedure<C> {
+    fn is_read_only(&self) -> bool;
+    fn execute(
         &self,
+        group_id: usize,
         transaction_id: usize,
-        template_id: usize,
-        arguments: Vec<Value>,
-    ) -> RequestGuard {
-        let request_variant = match self.optimization {
-            OptimizationLevel::Ungrouped | OptimizationLevel::Grouped => {
-                RequestVariant::AdHoc(self.templates[template_id].clone())
-            }
-            _ => RequestVariant::Prepared(template_id),
-        };
+        dibs: &Dibs,
+        connection: &mut C,
+    ) -> Result<Vec<RequestGuard>, AcquireError>;
+}
 
-        let request = Request::new(transaction_id, request_variant, arguments);
+pub trait Generator<P> {
+    fn next(&self) -> P;
+}
 
-        self.dibs.acquire(request, self.timeout).unwrap()
-    }
+pub trait Statement {
+    fn is_read_only(&self) -> bool;
+}
+
+pub trait Connection {
+    fn begin(&mut self);
+    fn commit(&mut self);
+    fn rollback(&mut self);
+    fn savepoint(&mut self);
 }

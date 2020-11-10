@@ -1,10 +1,11 @@
-use crate::{Client, DibsConnector, OptimizationLevel};
+use crate::{Generator, OptimizationLevel, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
-use dibs::{Dibs, RequestTemplate};
-use rand::Rng;
+use dibs::{AcquireError, Dibs, RequestGuard, RequestTemplate};
+use rand::{thread_rng, Rng};
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::time::Duration;
+
+const NUM_FIELDS: usize = 10;
 
 pub trait YCSBConnection {
     /// Get user.
@@ -24,28 +25,104 @@ pub trait YCSBConnection {
     fn update_user(&mut self, field: usize, data: &[u8], user_id: u32);
 }
 
-#[derive(Clone)]
-pub struct YCSBConfig {
+pub enum YCSBProcedure {
+    SelectUser {
+        field: usize,
+        user_id: u32,
+    },
+    UpdateUser {
+        field: usize,
+        data: Vec<u8>,
+        user_id: u32,
+    },
+}
+
+impl<C: YCSBConnection> Procedure<C> for YCSBProcedure {
+    fn is_read_only(&self) -> bool {
+        match self {
+            YCSBProcedure::SelectUser { .. } => true,
+            YCSBProcedure::UpdateUser { .. } => false,
+        }
+    }
+
+    fn execute(
+        &self,
+        group_id: usize,
+        transaction_id: usize,
+        dibs: &Dibs,
+        connection: &mut C,
+    ) -> Result<Vec<RequestGuard>, AcquireError> {
+        match self {
+            YCSBProcedure::SelectUser { field, user_id } => {
+                let guard = dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    *field,
+                    vec![Value::Integer(*user_id as usize)],
+                )?;
+
+                connection.select_user(*field, *user_id);
+
+                Ok(vec![guard])
+            }
+            YCSBProcedure::UpdateUser {
+                field,
+                data,
+                user_id,
+            } => {
+                let guard = dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    NUM_FIELDS + *field,
+                    vec![Value::Integer(*user_id as usize)],
+                )?;
+
+                connection.update_user(*field, data, *user_id);
+
+                Ok(vec![guard])
+            }
+        }
+    }
+}
+
+pub struct YCSBGenerator {
     num_rows: u32,
-    num_fields: usize,
     field_size: usize,
     select_mix: f64,
 }
 
-impl YCSBConfig {
-    pub fn new(num_rows: u32, num_fields: usize, field_size: usize, select_mix: f64) -> YCSBConfig {
-        assert!(select_mix >= 0.0 && select_mix <= 1.0);
-
-        YCSBConfig {
+impl YCSBGenerator {
+    pub fn new(num_rows: u32, field_size: usize, select_mix: f64) -> YCSBGenerator {
+        YCSBGenerator {
             num_rows,
-            num_fields,
             field_size,
             select_mix,
         }
     }
 }
 
-pub fn dibs(num_fields: usize, optimization: OptimizationLevel) -> DibsConnector {
+impl Generator<YCSBProcedure> for YCSBGenerator {
+    fn next(&self) -> YCSBProcedure {
+        let mut rng = thread_rng();
+
+        let transaction_type = rng.gen::<f64>();
+        let field = rng.gen_range(0, NUM_FIELDS);
+        let user_id = rng.gen_range(0, self.num_rows);
+
+        if transaction_type < self.select_mix {
+            YCSBProcedure::SelectUser { field, user_id }
+        } else {
+            let data = (0..self.field_size).map(|_| rng.gen()).collect::<Vec<_>>();
+            YCSBProcedure::UpdateUser {
+                field,
+                data,
+                user_id,
+            }
+        }
+    }
+}
+
+pub fn dibs(num_fields: usize, optimization: OptimizationLevel) -> Dibs {
     let filters = match optimization {
         OptimizationLevel::Filtered => &[Some(0)],
         _ => &[None],
@@ -72,62 +149,5 @@ pub fn dibs(num_fields: usize, optimization: OptimizationLevel) -> DibsConnector
         }))
         .collect::<Vec<_>>();
 
-    let dibs = Dibs::new(
-        filters,
-        &templates,
-        optimization != OptimizationLevel::Ungrouped,
-    );
-
-    DibsConnector::new(dibs, optimization, templates, Duration::from_secs(60))
+    Dibs::new(filters, &templates, optimization, Duration::from_secs(60))
 }
-
-pub struct YCSBClient<C> {
-    config: YCSBConfig,
-    dibs: Arc<DibsConnector>,
-    conn: C,
-}
-
-impl<C> YCSBClient<C> {
-    pub fn new(config: YCSBConfig, dibs: Arc<DibsConnector>, conn: C) -> YCSBClient<C> {
-        YCSBClient { config, dibs, conn }
-    }
-}
-
-impl<C> Client for YCSBClient<C>
-where
-    C: YCSBConnection,
-{
-    fn process(&mut self, transaction_id: usize) {
-        let mut rng = rand::thread_rng();
-
-        let transaction_type = rng.gen::<f64>();
-        let field = rng.gen_range(0, self.config.num_fields);
-        let user_id = rng.gen_range(0, self.config.num_rows);
-
-        if transaction_type < self.config.select_mix {
-            // Select user.
-            let _guard = self.dibs.acquire(
-                transaction_id,
-                field,
-                vec![Value::Integer(user_id as usize)],
-            );
-
-            self.conn.select_user(field, user_id);
-        } else {
-            // Update user.
-            let data = (0..self.config.field_size)
-                .map(|_| rng.gen())
-                .collect::<Vec<_>>();
-
-            let _guard = self.dibs.acquire(
-                transaction_id,
-                self.config.num_fields + field,
-                vec![Value::Integer(user_id as usize)],
-            );
-
-            self.conn.update_user(field, &data, user_id);
-        }
-    }
-}
-
-unsafe impl<C> Send for YCSBClient<C> {}

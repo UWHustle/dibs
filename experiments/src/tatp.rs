@@ -1,10 +1,9 @@
-use crate::{Client, DibsConnector, OptimizationLevel};
+use crate::{Generator, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
-use dibs::{Dibs, RequestTemplate};
+use dibs::{AcquireError, Dibs, OptimizationLevel, RequestGuard, RequestTemplate};
 use rand::rngs::ThreadRng;
-use rand::Rng;
+use rand::{thread_rng, Rng};
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::time::Duration;
 
 pub trait TATPConnection {
@@ -98,14 +97,218 @@ pub trait TATPConnection {
     fn delete_call_forwarding(&mut self, s_id: u32, sf_type: u8, start_time: u8);
 }
 
-#[derive(Clone)]
-pub struct TATPConfig {
+pub enum TATPProcedure {
+    GetSubscriberData {
+        s_id: u32,
+    },
+    GetNewDestination {
+        s_id: u32,
+        sf_type: u8,
+        start_time: u8,
+        end_time: u8,
+    },
+    GetAccessData {
+        s_id: u32,
+        ai_type: u8,
+    },
+    UpdateSubscriberData {
+        bit_1: bool,
+        s_id: u32,
+        data_a: u8,
+        sf_type: u8,
+    },
+    UpdateLocation {
+        vlr_location: u32,
+        s_id: u32,
+    },
+    InsertCallForwarding {
+        s_id: u32,
+        sf_type: u8,
+        start_time: u8,
+        end_time: u8,
+        numberx: String,
+    },
+    DeleteCallForwarding {
+        s_id: u32,
+        sf_type: u8,
+        start_time: u8,
+    },
+}
+
+impl<C: TATPConnection> Procedure<C> for TATPProcedure {
+    fn is_read_only(&self) -> bool {
+        match self {
+            TATPProcedure::GetSubscriberData { .. }
+            | TATPProcedure::GetNewDestination { .. }
+            | TATPProcedure::GetAccessData { .. } => true,
+            TATPProcedure::UpdateSubscriberData { .. }
+            | TATPProcedure::UpdateLocation { .. }
+            | TATPProcedure::InsertCallForwarding { .. }
+            | TATPProcedure::DeleteCallForwarding { .. } => false,
+        }
+    }
+
+    fn execute(
+        &self,
+        group_id: usize,
+        transaction_id: usize,
+        dibs: &Dibs,
+        connection: &mut C,
+    ) -> Result<Vec<RequestGuard>, AcquireError> {
+        let mut guards = vec![];
+
+        match self {
+            TATPProcedure::GetSubscriberData { s_id } => {
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    0,
+                    vec![Value::Integer(*s_id as usize)],
+                )?);
+
+                connection.get_subscriber_data(*s_id);
+            }
+
+            TATPProcedure::GetNewDestination {
+                s_id,
+                sf_type,
+                start_time,
+                end_time,
+            } => {
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    1,
+                    vec![
+                        Value::Integer(*s_id as usize),
+                        Value::Integer(*sf_type as usize),
+                    ],
+                )?);
+
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    2,
+                    vec![
+                        Value::Integer(*s_id as usize),
+                        Value::Integer(*sf_type as usize),
+                        Value::Integer(*start_time as usize),
+                        Value::Integer(*end_time as usize),
+                    ],
+                )?);
+
+                connection.get_new_destination(*s_id, *sf_type, *start_time, *end_time);
+            }
+
+            TATPProcedure::GetAccessData { s_id, ai_type } => {
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    3,
+                    vec![
+                        Value::Integer(*s_id as usize),
+                        Value::Integer(*ai_type as usize),
+                    ],
+                )?);
+
+                connection.get_access_data(*s_id, *ai_type);
+            }
+
+            TATPProcedure::UpdateSubscriberData {
+                bit_1,
+                s_id,
+                data_a,
+                sf_type,
+            } => {
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    4,
+                    vec![Value::Integer(*s_id as usize)],
+                )?);
+
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    5,
+                    vec![
+                        Value::Integer(*s_id as usize),
+                        Value::Integer(*sf_type as usize),
+                    ],
+                )?);
+
+                connection.update_subscriber_bit(*bit_1, *s_id);
+                connection.update_special_facility_data(*data_a, *s_id, *sf_type);
+            }
+            TATPProcedure::UpdateLocation { vlr_location, s_id } => {
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    6,
+                    vec![Value::Integer(*s_id as usize)],
+                )?);
+
+                connection.update_subscriber_location(*vlr_location, *s_id);
+            }
+            TATPProcedure::InsertCallForwarding {
+                s_id,
+                sf_type,
+                start_time,
+                end_time,
+                numberx,
+            } => {
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    7,
+                    vec![Value::Integer(*s_id as usize)],
+                )?);
+
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    8,
+                    vec![
+                        Value::Integer(*s_id as usize),
+                        Value::Integer(*sf_type as usize),
+                        Value::Integer(*start_time as usize),
+                    ],
+                )?);
+
+                connection.get_special_facility_types(*s_id);
+                connection.insert_call_forwarding(*s_id, *sf_type, *start_time, *end_time, numberx);
+            }
+            TATPProcedure::DeleteCallForwarding {
+                s_id,
+                sf_type,
+                start_time,
+            } => {
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    8,
+                    vec![
+                        Value::Integer(*s_id as usize),
+                        Value::Integer(*sf_type as usize),
+                        Value::Integer(*start_time as usize),
+                    ],
+                )?);
+
+                connection.delete_call_forwarding(*s_id, *sf_type, *start_time);
+            }
+        }
+
+        Ok(guards)
+    }
+}
+
+pub struct TATPGenerator {
     num_rows: u32,
     a_val: u32,
 }
 
-impl TATPConfig {
-    pub fn new(num_rows: u32) -> TATPConfig {
+impl TATPGenerator {
+    pub fn new(num_rows: u32) -> TATPGenerator {
         let a_val = if num_rows <= 1000000 {
             65535
         } else if num_rows <= 10000000 {
@@ -114,11 +317,7 @@ impl TATPConfig {
             2097151
         };
 
-        TATPConfig { num_rows, a_val }
-    }
-
-    pub fn get_num_rows(&self) -> u32 {
-        self.num_rows
+        TATPGenerator { num_rows, a_val }
     }
 
     fn gen_s_id(&self, rng: &mut ThreadRng) -> u32 {
@@ -133,7 +332,72 @@ impl TATPConfig {
     }
 }
 
-pub fn dibs(optimization: OptimizationLevel) -> DibsConnector {
+impl Generator<TATPProcedure> for TATPGenerator {
+    fn next(&self) -> TATPProcedure {
+        let mut rng = thread_rng();
+
+        let transaction_type = rng.gen::<f64>();
+        let s_id = self.gen_s_id(&mut rng);
+
+        if transaction_type < 0.35 {
+            TATPProcedure::GetSubscriberData { s_id }
+        } else if transaction_type < 0.45 {
+            let sf_type = rng.gen_range(1, 5);
+            let start_time = rng.gen_range(0, 3) * 8;
+            let end_time = rng.gen_range(1, 25);
+
+            TATPProcedure::GetNewDestination {
+                s_id,
+                sf_type,
+                start_time,
+                end_time,
+            }
+        } else if transaction_type < 0.80 {
+            let ai_type = rng.gen_range(1, 5);
+
+            TATPProcedure::GetAccessData { s_id, ai_type }
+        } else if transaction_type < 0.82 {
+            let bit_1 = rng.gen();
+            let data_a = rng.gen();
+            let sf_type = rng.gen_range(1, 5);
+
+            TATPProcedure::UpdateSubscriberData {
+                bit_1,
+                s_id,
+                data_a,
+                sf_type,
+            }
+        } else if transaction_type < 0.96 {
+            let vlr_location = rng.gen();
+
+            TATPProcedure::UpdateLocation { vlr_location, s_id }
+        } else if transaction_type < 0.98 {
+            let sf_type = rng.gen_range(1, 5);
+            let start_time = rng.gen_range(0, 3) * 8;
+            let end_time = rng.gen_range(1, 25);
+            let numberx = self.gen_numberx(&mut rng);
+
+            TATPProcedure::InsertCallForwarding {
+                s_id,
+                sf_type,
+                start_time,
+                end_time,
+                numberx,
+            }
+        } else {
+            let sf_type = rng.gen_range(1, 5);
+            let start_time = rng.gen_range(0, 3) * 8;
+
+            TATPProcedure::DeleteCallForwarding {
+                s_id,
+                sf_type,
+                start_time,
+            }
+        }
+    }
+}
+
+pub fn dibs(optimization: OptimizationLevel) -> Dibs {
     let filters = match optimization {
         OptimizationLevel::Filtered => &[Some(0), Some(0), Some(0), Some(0)],
         _ => &[None, None, None, None],
@@ -223,13 +487,7 @@ pub fn dibs(optimization: OptimizationLevel) -> DibsConnector {
         ),
     ];
 
-    let dibs = Dibs::new(
-        filters,
-        &templates,
-        optimization != OptimizationLevel::Ungrouped,
-    );
-
-    DibsConnector::new(dibs, optimization, templates, Duration::from_secs(60))
+    Dibs::new(filters, &templates, optimization, Duration::from_secs(60))
 }
 
 pub fn uppercase_alphabetic_string(len: usize, rng: &mut ThreadRng) -> String {
@@ -238,158 +496,3 @@ pub fn uppercase_alphabetic_string(len: usize, rng: &mut ThreadRng) -> String {
         .map(|_| CHARSET[rng.gen_range(0, CHARSET.len())] as char)
         .collect()
 }
-
-pub struct TATPClient<C> {
-    config: TATPConfig,
-    dibs: Arc<DibsConnector>,
-    conn: C,
-}
-
-impl<C> TATPClient<C> {
-    pub fn new(config: TATPConfig, dibs: Arc<DibsConnector>, conn: C) -> TATPClient<C> {
-        TATPClient { config, dibs, conn }
-    }
-}
-
-impl<C> Client for TATPClient<C>
-where
-    C: TATPConnection,
-{
-    fn process(&mut self, transaction_id: usize) {
-        let mut rng = rand::thread_rng();
-
-        let transaction_type = rng.gen::<f64>();
-        let s_id = self.config.gen_s_id(&mut rng);
-
-        if transaction_type < 0.35 {
-            // GET_SUBSCRIBER_DATA
-            // Probability: 35%
-            let _guard = self
-                .dibs
-                .acquire(transaction_id, 0, vec![Value::Integer(s_id as usize)]);
-
-            self.conn.get_subscriber_data(s_id);
-        } else if transaction_type < 0.45 {
-            // GET_NEW_DESTINATION
-            // Probability: 10%
-            let sf_type = rng.gen_range(1, 5);
-            let start_time = rng.gen_range(0, 3) * 8;
-            let end_time = rng.gen_range(1, 25);
-
-            let _guard_sf = self.dibs.acquire(
-                transaction_id,
-                1,
-                vec![
-                    Value::Integer(s_id as usize),
-                    Value::Integer(sf_type as usize),
-                ],
-            );
-
-            let _guard_cf = self.dibs.acquire(
-                transaction_id,
-                2,
-                vec![
-                    Value::Integer(s_id as usize),
-                    Value::Integer(sf_type as usize),
-                    Value::Integer(start_time as usize),
-                    Value::Integer(end_time as usize),
-                ],
-            );
-
-            self.conn
-                .get_new_destination(s_id, sf_type, start_time, end_time);
-        } else if transaction_type < 0.80 {
-            // GET_ACCESS_DATA
-            // Probability: 35%
-            let ai_type = rng.gen_range(1, 5);
-
-            let _guard = self.dibs.acquire(
-                transaction_id,
-                3,
-                vec![
-                    Value::Integer(s_id as usize),
-                    Value::Integer(ai_type as usize),
-                ],
-            );
-
-            self.conn.get_access_data(s_id, ai_type);
-        } else if transaction_type < 0.82 {
-            // UPDATE_SUBSCRIBER_DATA
-            // Probability: 2%
-            let bit_1 = rng.gen();
-            let data_a = rng.gen();
-            let sf_type = rng.gen_range(1, 5);
-
-            let _guard_s =
-                self.dibs
-                    .acquire(transaction_id, 4, vec![Value::Integer(s_id as usize)]);
-
-            let _guard_sf = self.dibs.acquire(
-                transaction_id,
-                5,
-                vec![
-                    Value::Integer(s_id as usize),
-                    Value::Integer(sf_type as usize),
-                ],
-            );
-
-            self.conn.update_subscriber_bit(bit_1, s_id);
-            self.conn
-                .update_special_facility_data(data_a, s_id, sf_type);
-        } else if transaction_type < 0.96 {
-            // UPDATE_LOCATION
-            // Probability: 14%
-            let vlr_location = rng.gen();
-
-            let _guard = self
-                .dibs
-                .acquire(transaction_id, 6, vec![Value::Integer(s_id as usize)]);
-
-            self.conn.update_subscriber_location(vlr_location, s_id);
-        } else if transaction_type < 0.98 {
-            // INSERT_CALL_FORWARDING
-            // Probability: 2%
-            let sf_type = rng.gen_range(1, 5);
-            let start_time = rng.gen_range(0, 3) * 8;
-            let end_time = rng.gen_range(1, 25);
-            let numberx = self.config.gen_numberx(&mut rng);
-
-            let _guard_sf =
-                self.dibs
-                    .acquire(transaction_id, 7, vec![Value::Integer(s_id as usize)]);
-
-            let _guard_cf = self.dibs.acquire(
-                transaction_id,
-                8,
-                vec![
-                    Value::Integer(s_id as usize),
-                    Value::Integer(sf_type as usize),
-                    Value::Integer(start_time as usize),
-                ],
-            );
-
-            self.conn.get_special_facility_types(s_id);
-            self.conn
-                .insert_call_forwarding(s_id, sf_type, start_time, end_time, &numberx);
-        } else {
-            // DELETE_CALL_FORWARDING
-            // Probability: 2%
-            let sf_type = rng.gen_range(1, 5);
-            let start_time = rng.gen_range(0, 3) * 8;
-
-            let _guard = self.dibs.acquire(
-                transaction_id,
-                8,
-                vec![
-                    Value::Integer(s_id as usize),
-                    Value::Integer(sf_type as usize),
-                    Value::Integer(start_time as usize),
-                ],
-            );
-
-            self.conn.delete_call_forwarding(s_id, sf_type, start_time);
-        }
-    }
-}
-
-unsafe impl<C> Send for TATPClient<C> {}

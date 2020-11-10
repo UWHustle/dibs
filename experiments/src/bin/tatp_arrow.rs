@@ -1,7 +1,9 @@
 use clap::{App, Arg};
+use dibs::OptimizationLevel;
 use dibs_experiments::arrow_server::{ArrowTATPConnection, ArrowTATPDatabase};
-use dibs_experiments::tatp::{TATPClient, TATPConfig};
-use dibs_experiments::{runner, tatp, OptimizationLevel};
+use dibs_experiments::tatp::TATPGenerator;
+use dibs_experiments::worker::{SharedState, Worker};
+use dibs_experiments::{runner, tatp};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -21,19 +23,20 @@ fn main() {
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let config = TATPConfig::new(num_rows);
-    let dibs = Arc::new(tatp::dibs(optimization));
-    let db = Arc::new(ArrowTATPDatabase::new(&config));
+    let dibs = tatp::dibs(optimization);
+    let shared_state = Arc::new(SharedState::new(dibs));
 
-    let clients = (0..num_workers)
+    let db = Arc::new(ArrowTATPDatabase::new(num_rows));
+
+    let workers = (0..num_workers)
         .map(|_| {
-            TATPClient::new(
-                config.clone(),
-                Arc::clone(&dibs),
+            Worker::new(
+                Arc::clone(&shared_state),
+                TATPGenerator::new(num_rows),
                 ArrowTATPConnection::new(Arc::clone(&db)),
             )
         })
         .collect();
 
-    runner::run(clients);
+    runner::run(workers, shared_state);
 }

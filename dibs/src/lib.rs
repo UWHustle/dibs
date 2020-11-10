@@ -1,6 +1,7 @@
 use crate::predicate::{ComparisonOperator, Connective, Predicate, Value};
 use fnv::FnvHashMap;
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, WaitTimeoutResult};
 use std::time::Duration;
@@ -41,6 +42,7 @@ pub enum RequestVariant {
 }
 
 pub struct Request {
+    group_id: usize,
     transaction_id: usize,
     variant: RequestVariant,
     arguments: Vec<Value>,
@@ -48,8 +50,14 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn new(transaction_id: usize, variant: RequestVariant, arguments: Vec<Value>) -> Request {
+    pub fn new(
+        group_id: usize,
+        transaction_id: usize,
+        variant: RequestVariant,
+        arguments: Vec<Value>,
+    ) -> Request {
         Request {
+            group_id,
             transaction_id,
             variant,
             arguments,
@@ -145,18 +153,48 @@ fn prepare_conflicts(
         .collect()
 }
 
+#[derive(Debug)]
+pub enum AcquireError {
+    Timeout(usize),
+    GroupConflict,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum OptimizationLevel {
+    Ungrouped,
+    Grouped,
+    Prepared,
+    Filtered,
+}
+
+impl FromStr for OptimizationLevel {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "ungrouped" => Ok(OptimizationLevel::Ungrouped),
+            "grouped" => Ok(OptimizationLevel::Grouped),
+            "prepared" => Ok(OptimizationLevel::Prepared),
+            "filtered" => Ok(OptimizationLevel::Filtered),
+            _ => Err(()),
+        }
+    }
+}
+
 pub struct Dibs {
     prepared_requests: Vec<PreparedRequest>,
     inflight_requests: Vec<Vec<RequestBucket>>,
+    optimization: OptimizationLevel,
+    timeout: Duration,
     request_count: AtomicUsize,
-    grouped_solve: bool,
 }
 
 impl Dibs {
     pub fn new(
         filters: &[Option<usize>],
         templates: &[RequestTemplate],
-        grouped_solve: bool,
+        optimization: OptimizationLevel,
+        timeout: Duration,
     ) -> Dibs {
         let prepared_requests = templates
             .iter()
@@ -184,13 +222,32 @@ impl Dibs {
         Dibs {
             prepared_requests,
             inflight_requests,
+            optimization,
+            timeout,
             request_count: AtomicUsize::new(0),
-            grouped_solve,
         }
     }
 
-    pub fn acquire(&self, request: Request, timeout: Duration) -> Option<RequestGuard> {
-        let request = Arc::new(request);
+    pub fn acquire(
+        &self,
+        group_id: usize,
+        transaction_id: usize,
+        template_id: usize,
+        arguments: Vec<Value>,
+    ) -> Result<RequestGuard, AcquireError> {
+        let request_variant = match self.optimization {
+            OptimizationLevel::Ungrouped | OptimizationLevel::Grouped => {
+                RequestVariant::AdHoc(self.prepared_requests[template_id].template.clone())
+            }
+            _ => RequestVariant::Prepared(template_id),
+        };
+
+        let request = Arc::new(Request::new(
+            group_id,
+            transaction_id,
+            request_variant,
+            arguments,
+        ));
         let request_id = self.request_count.fetch_add(1, Ordering::Relaxed);
 
         let mut conflicting_requests = vec![];
@@ -252,16 +309,25 @@ impl Dibs {
             }
         };
 
+        let guard = RequestGuard {
+            id: request_id,
+            buckets,
+        };
+
         for conflicting_request in &conflicting_requests {
-            if conflicting_request.await_completion(timeout).timed_out() {
-                return None;
+            if conflicting_request.group_id == request.group_id {
+                return Err(AcquireError::GroupConflict);
+            }
+
+            if conflicting_request
+                .await_completion(self.timeout)
+                .timed_out()
+            {
+                return Err(AcquireError::Timeout(conflicting_request.transaction_id));
             }
         }
 
-        Some(RequestGuard {
-            id: request_id,
-            buckets,
-        })
+        Ok(guard)
     }
 
     fn solve_ad_hoc(
@@ -282,8 +348,8 @@ impl Dibs {
                 };
 
                 if potential_conflict(template, other_template) {
-                    if self.grouped_solve {
-                        if solver::solve_clustered(
+                    if self.optimization == OptimizationLevel::Ungrouped {
+                        if solver::solve_dnf(
                             &template.predicate,
                             &request.arguments,
                             &other_template.predicate,
@@ -292,7 +358,7 @@ impl Dibs {
                             conflicting_requests.push(Arc::clone(other_request));
                         }
                     } else {
-                        if solver::solve_dnf(
+                        if solver::solve_clustered(
                             &template.predicate,
                             &request.arguments,
                             &other_template.predicate,

@@ -1,6 +1,7 @@
-use crate::scan::{ScanConfig, ScanServer};
-use crate::tatp::{TATPConfig, TATPConnection};
+use crate::scan::ScanConnection;
+use crate::tatp::TATPConnection;
 use crate::ycsb::YCSBConnection;
+use crate::Connection;
 use arrow::array::{
     ArrayBuilder, BooleanArray, BooleanBuilder, FixedSizeBinaryArray, FixedSizeBinaryBuilder,
     PrimitiveArrayOps, UInt32Array, UInt32Builder, UInt8Array, UInt8Builder,
@@ -343,8 +344,8 @@ pub struct ArrowTATPDatabase {
 }
 
 impl ArrowTATPDatabase {
-    pub fn new(config: &TATPConfig) -> ArrowTATPDatabase {
-        let subscriber = Subscriber::new(config.get_num_rows());
+    pub fn new(num_rows: u32) -> ArrowTATPDatabase {
+        let subscriber = Subscriber::new(num_rows);
         let access_info = AccessInfo::new(&subscriber);
         let special_facility = SpecialFacility::new(&subscriber);
         let call_forwarding = CallForwarding::new(&special_facility);
@@ -366,6 +367,13 @@ impl ArrowTATPConnection {
     pub fn new(db: Arc<ArrowTATPDatabase>) -> ArrowTATPConnection {
         ArrowTATPConnection { db }
     }
+}
+
+impl Connection for ArrowTATPConnection {
+    fn begin(&mut self) {}
+    fn commit(&mut self) {}
+    fn rollback(&mut self) {}
+    fn savepoint(&mut self) {}
 }
 
 impl TATPConnection for ArrowTATPConnection {
@@ -552,32 +560,50 @@ impl TATPConnection for ArrowTATPConnection {
     }
 }
 
-pub struct ArrowScanServer {
+pub struct ArrowScanDatabase {
     subscriber: Subscriber,
 }
 
-impl ArrowScanServer {
-    pub fn new(config: &ScanConfig) -> ArrowScanServer {
-        ArrowScanServer {
-            subscriber: Subscriber::new(config.get_num_rows()),
+impl ArrowScanDatabase {
+    pub fn new(num_rows: u32) -> ArrowScanDatabase {
+        ArrowScanDatabase {
+            subscriber: Subscriber::new(num_rows),
         }
     }
 }
 
-impl ScanServer for ArrowScanServer {
+pub struct ArrowScanConnection {
+    db: Arc<ArrowScanDatabase>,
+}
+
+impl ArrowScanConnection {
+    pub fn new(db: Arc<ArrowScanDatabase>) -> ArrowScanConnection {
+        ArrowScanConnection { db }
+    }
+}
+
+impl Connection for ArrowScanConnection {
+    fn begin(&mut self) {}
+    fn commit(&mut self) {}
+    fn rollback(&mut self) {}
+    fn savepoint(&mut self) {}
+}
+
+impl ScanConnection for ArrowScanConnection {
     fn get_subscriber_data_scan(
         &self,
         byte2: [(u8, u8, u8, u8); 10],
     ) -> Vec<([bool; 10], [u8; 10], [u8; 10], u32, u32)> {
-        self.subscriber
+        self.db
+            .subscriber
             .scan(byte2)
-            .map(|row| self.subscriber.get_row_data(row))
+            .map(|row| self.db.subscriber.get_row_data(row))
             .collect()
     }
 
     fn update_subscriber_location_scan(&self, vlr_location: u32, byte2: [(u8, u8, u8, u8); 10]) {
-        for row in self.subscriber.scan(byte2) {
-            self.subscriber.update_row_location(row, vlr_location);
+        for row in self.db.subscriber.scan(byte2) {
+            self.db.subscriber.update_row_location(row, vlr_location);
         }
     }
 }
@@ -632,6 +658,13 @@ impl ArrowYCSBConnection {
     pub fn new(db: Arc<ArrowYCSBDatabase>) -> ArrowYCSBConnection {
         ArrowYCSBConnection { db }
     }
+}
+
+impl Connection for ArrowYCSBConnection {
+    fn begin(&mut self) {}
+    fn commit(&mut self) {}
+    fn rollback(&mut self) {}
+    fn savepoint(&mut self) {}
 }
 
 impl YCSBConnection for ArrowYCSBConnection {

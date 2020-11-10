@@ -1,7 +1,9 @@
 use clap::{App, Arg};
+use dibs::OptimizationLevel;
 use dibs_experiments::sqlite_server::SQLiteTATPConnection;
-use dibs_experiments::tatp::{TATPClient, TATPConfig};
-use dibs_experiments::{runner, sqlite_server, tatp, OptimizationLevel};
+use dibs_experiments::tatp::TATPGenerator;
+use dibs_experiments::worker::{SharedState, Worker};
+use dibs_experiments::{runner, sqlite_server, tatp};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -21,20 +23,20 @@ fn main() {
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let config = TATPConfig::new(num_rows);
-    let dibs = Arc::new(tatp::dibs(optimization));
+    let dibs = tatp::dibs(optimization);
+    let shared_state = Arc::new(SharedState::new(dibs));
 
     sqlite_server::load_tatp("tatp.sqlite", num_rows);
 
-    let clients = (0..num_workers)
+    let workers = (0..num_workers)
         .map(|_| {
-            TATPClient::new(
-                config.clone(),
-                Arc::clone(&dibs),
+            Worker::new(
+                Arc::clone(&shared_state),
+                TATPGenerator::new(num_rows),
                 SQLiteTATPConnection::new("tatp.sqlite"),
             )
         })
         .collect();
 
-    runner::run(clients);
+    runner::run(workers, shared_state);
 }

@@ -1,9 +1,11 @@
 use clap::{App, Arg};
-use dibs_experiments::scan::{ScanConfig, ScanClient};
-use dibs_experiments::{scan, OptimizationLevel, runner};
+use dibs::OptimizationLevel;
+use dibs_experiments::arrow_server::{ArrowScanConnection, ArrowScanDatabase};
+use dibs_experiments::scan::ScanGenerator;
+use dibs_experiments::worker::{SharedState, Worker};
+use dibs_experiments::{runner, scan};
 use std::str::FromStr;
 use std::sync::Arc;
-use dibs_experiments::arrow_server::ArrowScanServer;
 
 fn main() {
     let matches = App::new("Scans on Arrow")
@@ -28,13 +30,20 @@ fn main() {
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let config = ScanConfig::new(num_rows, select_mix, range, num_conjuncts);
-    let dibs = Arc::new(scan::dibs(num_conjuncts, optimization));
-    let server = Arc::new(ArrowScanServer::new(&config));
+    let dibs = scan::dibs(num_conjuncts, optimization);
+    let shared_state = Arc::new(SharedState::new(dibs));
 
-    let clients = (0..num_workers)
-        .map(|_| ScanClient::new(config.clone(), Arc::clone(&dibs), Arc::clone(&server)))
+    let db = Arc::new(ArrowScanDatabase::new(num_rows));
+
+    let workers = (0..num_workers)
+        .map(|_| {
+            Worker::new(
+                Arc::clone(&shared_state),
+                ScanGenerator::new(select_mix, range),
+                ArrowScanConnection::new(Arc::clone(&db)),
+            )
+        })
         .collect();
 
-    runner::run(clients);
+    runner::run(workers, shared_state);
 }

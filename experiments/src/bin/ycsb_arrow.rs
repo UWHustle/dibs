@@ -1,7 +1,9 @@
 use clap::{App, Arg};
+use dibs::OptimizationLevel;
 use dibs_experiments::arrow_server::{ArrowYCSBConnection, ArrowYCSBDatabase};
-use dibs_experiments::ycsb::{YCSBClient, YCSBConfig};
-use dibs_experiments::{runner, ycsb, OptimizationLevel};
+use dibs_experiments::worker::{SharedState, Worker};
+use dibs_experiments::ycsb::YCSBGenerator;
+use dibs_experiments::{runner, ycsb};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -27,19 +29,20 @@ fn main() {
     let select_mix = f64::from_str(matches.value_of("select_mix").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let config = YCSBConfig::new(num_rows, num_fields, field_size, select_mix);
-    let dibs = Arc::new(ycsb::dibs(num_fields, optimization));
+    let dibs = ycsb::dibs(num_fields, optimization);
+    let shared_state = Arc::new(SharedState::new(dibs));
+
     let db = Arc::new(ArrowYCSBDatabase::new(num_rows, num_fields, field_size));
 
-    let clients = (0..num_workers)
+    let workers = (0..num_workers)
         .map(|_| {
-            YCSBClient::new(
-                config.clone(),
-                Arc::clone(&dibs),
+            Worker::new(
+                Arc::clone(&shared_state),
+                YCSBGenerator::new(num_rows, field_size, select_mix),
                 ArrowYCSBConnection::new(Arc::clone(&db)),
             )
         })
         .collect();
 
-    runner::run(clients);
+    runner::run(workers, shared_state);
 }
