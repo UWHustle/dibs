@@ -2,7 +2,7 @@ use crate::{Generator, OptimizationLevel, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
 use dibs::{AcquireError, Dibs, RequestGuard, RequestTemplate};
 use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::{distributions, thread_rng, Rng};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -86,23 +86,55 @@ impl<C: YCSBConnection> Procedure<C> for YCSBProcedure {
     }
 }
 
-pub struct YCSBGenerator {
-    num_rows: u32,
+pub struct YCSBGenerator<D> {
     field_size: usize,
     select_mix: f64,
+    distribution: D,
 }
 
-impl YCSBGenerator {
-    pub fn new(num_rows: u32, field_size: usize, select_mix: f64) -> YCSBGenerator {
+impl<D> YCSBGenerator<D> {
+    fn new(field_size: usize, select_mix: f64, distribution: D) -> YCSBGenerator<D> {
         YCSBGenerator {
-            num_rows,
             field_size,
             select_mix,
+            distribution,
         }
     }
 }
 
-impl Generator for YCSBGenerator {
+pub type YCSBUniformGenerator = YCSBGenerator<distributions::Uniform<usize>>;
+pub type YCSBZipfGenerator = YCSBGenerator<zipf::ZipfDistribution>;
+
+pub fn uniform_generator(
+    num_rows: u32,
+    field_size: usize,
+    select_mix: f64,
+) -> YCSBUniformGenerator {
+    YCSBGenerator::new(
+        field_size,
+        select_mix,
+        distributions::Uniform::new(0, num_rows as usize),
+    )
+}
+
+pub fn zipf_generator(
+    num_rows: u32,
+    field_size: usize,
+    select_mix: f64,
+    skew: f64,
+) -> YCSBZipfGenerator {
+    assert!(skew > 0.0);
+    YCSBGenerator::new(
+        field_size,
+        select_mix,
+        zipf::ZipfDistribution::new(num_rows as usize, skew).unwrap(),
+    )
+}
+
+impl<D> Generator for YCSBGenerator<D>
+where
+    D: distributions::Distribution<usize>,
+{
     type Item = YCSBProcedure;
 
     fn next(&self) -> YCSBProcedure {
@@ -110,7 +142,7 @@ impl Generator for YCSBGenerator {
 
         let transaction_type = rng.gen::<f64>();
         let field = rng.gen_range(0, NUM_FIELDS);
-        let user_id = rng.gen_range(0, self.num_rows);
+        let user_id = self.distribution.sample(&mut rng) as u32;
 
         if transaction_type < self.select_mix {
             YCSBProcedure::SelectUser { field, user_id }

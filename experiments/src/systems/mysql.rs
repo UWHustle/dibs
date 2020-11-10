@@ -98,7 +98,7 @@ impl Connection for MySQLYCSBConnection {
     }
 
     fn commit(&mut self) {
-        self.conn.query_drop("COMMIT ").unwrap();
+        self.conn.query_drop("COMMIT").unwrap();
     }
 
     fn rollback(&mut self) {

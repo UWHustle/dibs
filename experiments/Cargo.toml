@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 dibs = { path = "../dibs" }
 rand = "0.7"
+zipf = "6.1"
 itertools = "0.9"
 fnv = "1.0.7"
 core_affinity = "0.5"
