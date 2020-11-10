@@ -24,15 +24,14 @@ fn main() {
     let num_rows = u32::from_str(matches.value_of("num_rows").unwrap()).unwrap();
     let optimization =
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
-    let num_fields = usize::from_str(matches.value_of("num_fields").unwrap()).unwrap();
     let field_size = usize::from_str(matches.value_of("field_size").unwrap()).unwrap();
     let select_mix = f64::from_str(matches.value_of("select_mix").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let dibs = ycsb::dibs(num_fields, optimization);
+    let dibs = ycsb::dibs(optimization);
     let shared_state = Arc::new(SharedState::new(dibs));
 
-    let db = Arc::new(ArrowYCSBDatabase::new(num_rows, num_fields, field_size));
+    let db = Arc::new(ArrowYCSBDatabase::new(num_rows, field_size));
 
     let mut workers: Vec<Box<dyn Worker + Send>> = vec![];
 

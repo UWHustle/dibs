@@ -1,10 +1,65 @@
 use crate::tatp::TATPConnection;
-use crate::{tatp, Connection};
+use crate::ycsb::YCSBConnection;
+use crate::{tatp, ycsb, Connection};
 use itertools::Itertools;
+use rand::distributions::Alphanumeric;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use rusqlite::{params, ErrorCode, Statement};
 use std::path::Path;
+
+struct SQLiteBaseStatements<'a> {
+    begin_stmt: Statement<'a>,
+    commit_stmt: Statement<'a>,
+    rollback_stmt: Statement<'a>,
+    savepoint_stmt: Statement<'a>,
+}
+
+impl<'a> SQLiteBaseStatements<'a> {
+    fn new(conn: *mut rusqlite::Connection) -> SQLiteBaseStatements<'a> {
+        let begin_stmt = unsafe { conn.as_ref() }.unwrap().prepare("BEGIN;").unwrap();
+
+        let commit_stmt = unsafe { conn.as_ref() }
+            .unwrap()
+            .prepare("COMMIT;")
+            .unwrap();
+
+        let rollback_stmt = unsafe { conn.as_ref() }
+            .unwrap()
+            .prepare("ROLLBACK TO 'X';")
+            .unwrap();
+
+        let savepoint_stmt = unsafe { conn.as_ref() }
+            .unwrap()
+            .prepare("SAVEPOINT 'X';")
+            .unwrap();
+
+        SQLiteBaseStatements {
+            begin_stmt,
+            commit_stmt,
+            rollback_stmt,
+            savepoint_stmt,
+        }
+    }
+}
+
+impl Connection for SQLiteBaseStatements<'_> {
+    fn begin(&mut self) {
+        self.begin_stmt.execute(params![]).unwrap();
+    }
+
+    fn commit(&mut self) {
+        self.commit_stmt.execute(params![]).unwrap();
+    }
+
+    fn rollback(&mut self) {
+        self.rollback_stmt.execute(params![]).unwrap();
+    }
+
+    fn savepoint(&mut self) {
+        self.savepoint_stmt.execute(params![]).unwrap();
+    }
+}
 
 pub fn load_tatp<P>(path: P, num_rows: u32)
 where
@@ -188,41 +243,6 @@ where
     .unwrap();
 }
 
-struct SQLiteBaseStatements<'a> {
-    begin_stmt: Statement<'a>,
-    commit_stmt: Statement<'a>,
-    rollback_stmt: Statement<'a>,
-    savepoint_stmt: Statement<'a>,
-}
-
-impl<'a> SQLiteBaseStatements<'a> {
-    fn new(conn: *mut rusqlite::Connection) -> SQLiteBaseStatements<'a> {
-        let begin_stmt = unsafe { conn.as_ref() }.unwrap().prepare("BEGIN;").unwrap();
-
-        let commit_stmt = unsafe { conn.as_ref() }
-            .unwrap()
-            .prepare("COMMIT;")
-            .unwrap();
-
-        let rollback_stmt = unsafe { conn.as_ref() }
-            .unwrap()
-            .prepare("ROLLBACK TO 'X';")
-            .unwrap();
-
-        let savepoint_stmt = unsafe { conn.as_ref() }
-            .unwrap()
-            .prepare("SAVEPOINT 'X';")
-            .unwrap();
-
-        SQLiteBaseStatements {
-            begin_stmt,
-            commit_stmt,
-            rollback_stmt,
-            savepoint_stmt,
-        }
-    }
-}
-
 pub struct SQLiteTATPConnection<'a> {
     base: SQLiteBaseStatements<'a>,
     get_subscriber_data_stmt: Statement<'a>,
@@ -350,19 +370,19 @@ impl<'a> SQLiteTATPConnection<'a> {
 
 impl Connection for SQLiteTATPConnection<'_> {
     fn begin(&mut self) {
-        self.base.begin_stmt.execute(params![]).unwrap();
+        self.base.begin();
     }
 
     fn commit(&mut self) {
-        self.base.commit_stmt.execute(params![]).unwrap();
+        self.base.commit();
     }
 
     fn rollback(&mut self) {
-        self.base.rollback_stmt.execute(params![]).unwrap();
+        self.base.rollback();
     }
 
     fn savepoint(&mut self) {
-        self.base.savepoint_stmt.execute(params![]).unwrap();
+        self.base.savepoint();
     }
 }
 
@@ -486,8 +506,142 @@ impl TATPConnection for SQLiteTATPConnection<'_> {
     }
 }
 
-impl Drop for SQLiteTATPConnection<'_> {
-    fn drop(&mut self) {}
+unsafe impl Send for SQLiteTATPConnection<'_> {}
+
+pub fn load_ycsb<P>(path: P, num_rows: u32, field_size: usize)
+where
+    P: AsRef<Path>,
+{
+    assert!(field_size > 0 && field_size <= i32::max_value() as usize);
+
+    let mut rng = rand::thread_rng();
+
+    let conn = rusqlite::Connection::open(path).unwrap();
+
+    conn.pragma_update(None, "journal_mode", &"WAL").unwrap();
+    conn.pragma_update(None, "synchronous", &"FULL").unwrap();
+
+    conn.execute("DROP TABLE IF EXISTS users;", params![])
+        .unwrap();
+
+    conn.execute(
+        &format!(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, {});",
+            (0..ycsb::NUM_FIELDS)
+                .map(|field| format!("field_{} TEXT", field))
+                .join(",")
+        ),
+        params![],
+    )
+    .unwrap();
+
+    let mut ids = (0..num_rows).collect::<Vec<_>>();
+    ids.shuffle(&mut rng);
+
+    conn.execute(
+        &format!(
+            "INSERT INTO users VALUES {};",
+            ids.iter()
+                .map(|&id| format!(
+                    "({},{})",
+                    id,
+                    (0..ycsb::NUM_FIELDS)
+                        .map(|_| format!(
+                            "'{}'",
+                            rng.sample_iter(&Alphanumeric)
+                                .take(field_size)
+                                .collect::<String>()
+                        ))
+                        .join(",")
+                ))
+                .join(",")
+        ),
+        params![],
+    )
+    .unwrap();
 }
 
-unsafe impl Send for SQLiteTATPConnection<'_> {}
+pub struct SQLiteYCSBConnection<'a> {
+    base: SQLiteBaseStatements<'a>,
+    select_user_stmts: Vec<Statement<'a>>,
+    update_user_stmts: Vec<Statement<'a>>,
+    _conn: Box<rusqlite::Connection>,
+}
+
+impl<'a> SQLiteYCSBConnection<'a> {
+    pub fn new<P>(path: P) -> SQLiteYCSBConnection<'a>
+    where
+        P: AsRef<Path>,
+    {
+        let conn = Box::into_raw(Box::new(rusqlite::Connection::open(path).unwrap()));
+
+        let base = SQLiteBaseStatements::new(conn);
+
+        let select_user_stmts = (0..ycsb::NUM_FIELDS)
+            .map(|field| {
+                unsafe { conn.as_ref() }
+                    .unwrap()
+                    .prepare(&format!("SELECT field_{} FROM users WHERE id = ?;", field))
+                    .unwrap()
+            })
+            .collect();
+
+        let update_user_stmts = (0..ycsb::NUM_FIELDS)
+            .map(|field| {
+                unsafe { conn.as_ref() }
+                    .unwrap()
+                    .prepare(&format!(
+                        "UPDATE users SET field_{} = ? WHERE id = ?;",
+                        field
+                    ))
+                    .unwrap()
+            })
+            .collect();
+
+        SQLiteYCSBConnection {
+            base,
+            select_user_stmts,
+            update_user_stmts,
+            _conn: unsafe { Box::from_raw(conn) },
+        }
+    }
+}
+
+impl Connection for SQLiteYCSBConnection<'_> {
+    fn begin(&mut self) {
+        self.base.begin();
+    }
+
+    fn commit(&mut self) {
+        self.base.commit();
+    }
+
+    fn rollback(&mut self) {
+        self.base.rollback();
+    }
+
+    fn savepoint(&mut self) {
+        self.base.savepoint();
+    }
+}
+
+impl YCSBConnection for SQLiteYCSBConnection<'_> {
+    fn select_user(&mut self, field: usize, user_id: u32) -> String {
+        self.select_user_stmts[field]
+            .query(&[user_id])
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap()
+    }
+
+    fn update_user(&mut self, field: usize, data: &str, user_id: u32) {
+        self.update_user_stmts[field]
+            .execute(params![data, user_id])
+            .unwrap();
+    }
+}
+
+unsafe impl Send for SQLiteYCSBConnection<'_> {}

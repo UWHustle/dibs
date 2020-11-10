@@ -1,6 +1,6 @@
 use crate::scan::ScanConnection;
 use crate::tatp::TATPConnection;
-use crate::ycsb::YCSBConnection;
+use crate::ycsb::{YCSBConnection, NUM_FIELDS};
 use crate::Connection;
 use arrow::array::{
     ArrayBuilder, BooleanArray, BooleanBuilder, FixedSizeBinaryArray, FixedSizeBinaryBuilder,
@@ -615,7 +615,7 @@ pub struct ArrowYCSBDatabase {
 }
 
 impl ArrowYCSBDatabase {
-    pub fn new(num_rows: u32, num_fields: usize, field_size: usize) -> ArrowYCSBDatabase {
+    pub fn new(num_rows: u32, field_size: usize) -> ArrowYCSBDatabase {
         assert!(field_size > 0 && field_size <= i32::max_value() as usize);
 
         let mut rng = rand::thread_rng();
@@ -624,7 +624,7 @@ impl ArrowYCSBDatabase {
         user_ids.shuffle(&mut rng);
 
         let mut user_id_builder = UInt32Builder::new(user_ids.len());
-        let mut field_builders = (0..num_fields)
+        let mut field_builders = (0..NUM_FIELDS)
             .map(|_| FixedSizeBinaryBuilder::new(user_ids.len(), field_size as i32))
             .collect::<Vec<_>>();
 
@@ -668,12 +668,12 @@ impl Connection for ArrowYCSBConnection {
 }
 
 impl YCSBConnection for ArrowYCSBConnection {
-    fn select_user(&mut self, field: usize, user_id: u32) -> Vec<u8> {
+    fn select_user(&mut self, field: usize, user_id: u32) -> String {
         let row = self.db.index.get(&user_id).unwrap();
-        self.db.col_fields[field].value(*row).to_vec()
+        String::from_utf8(self.db.col_fields[field].value(*row).to_vec()).unwrap()
     }
 
-    fn update_user(&mut self, field: usize, data: &[u8], user_id: u32) {
+    fn update_user(&mut self, field: usize, data: &str, user_id: u32) {
         let row = self.db.index.get(&user_id).unwrap();
         let value = self.db.col_fields[field].value(*row);
 

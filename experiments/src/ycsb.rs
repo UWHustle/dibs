@@ -1,11 +1,12 @@
 use crate::{Generator, OptimizationLevel, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
 use dibs::{AcquireError, Dibs, RequestGuard, RequestTemplate};
+use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::collections::HashSet;
 use std::time::Duration;
 
-const NUM_FIELDS: usize = 10;
+pub const NUM_FIELDS: usize = 10;
 
 pub trait YCSBConnection {
     /// Get user.
@@ -14,7 +15,7 @@ pub trait YCSBConnection {
     /// FROM users
     /// WHERE id = ?;
     /// ```
-    fn select_user(&mut self, field: usize, user_id: u32) -> Vec<u8>;
+    fn select_user(&mut self, field: usize, user_id: u32) -> String;
 
     /// Update user.
     /// ```sql
@@ -22,7 +23,7 @@ pub trait YCSBConnection {
     /// SET field = ?
     /// WHERE id = ?;
     /// ```
-    fn update_user(&mut self, field: usize, data: &[u8], user_id: u32);
+    fn update_user(&mut self, field: usize, data: &str, user_id: u32);
 }
 
 pub enum YCSBProcedure {
@@ -32,7 +33,7 @@ pub enum YCSBProcedure {
     },
     UpdateUser {
         field: usize,
-        data: Vec<u8>,
+        data: String,
         user_id: u32,
     },
 }
@@ -114,7 +115,10 @@ impl Generator for YCSBGenerator {
         if transaction_type < self.select_mix {
             YCSBProcedure::SelectUser { field, user_id }
         } else {
-            let data = (0..self.field_size).map(|_| rng.gen()).collect::<Vec<_>>();
+            let data = rng
+                .sample_iter(&Alphanumeric)
+                .take(self.field_size)
+                .collect();
             YCSBProcedure::UpdateUser {
                 field,
                 data,
@@ -124,13 +128,13 @@ impl Generator for YCSBGenerator {
     }
 }
 
-pub fn dibs(num_fields: usize, optimization: OptimizationLevel) -> Dibs {
+pub fn dibs(optimization: OptimizationLevel) -> Dibs {
     let filters = match optimization {
         OptimizationLevel::Filtered => &[Some(0)],
         _ => &[None],
     };
 
-    let templates = (0..num_fields)
+    let templates = (0..NUM_FIELDS)
         .map(|field| {
             // (0..num_fields) Get user.
             RequestTemplate::new(
@@ -140,7 +144,7 @@ pub fn dibs(num_fields: usize, optimization: OptimizationLevel) -> Dibs {
                 Predicate::comparison(ComparisonOperator::Eq, 0, 0),
             )
         })
-        .chain((0..num_fields).map(|field| {
+        .chain((0..NUM_FIELDS).map(|field| {
             // (num_fields..2*num_fields) Update user.
             RequestTemplate::new(
                 0,
