@@ -188,15 +188,15 @@ where
     .unwrap();
 }
 
-struct SQLiteBaseConnection<'a> {
+struct SQLiteBaseStatements<'a> {
     begin_stmt: Statement<'a>,
     commit_stmt: Statement<'a>,
     rollback_stmt: Statement<'a>,
     savepoint_stmt: Statement<'a>,
 }
 
-impl<'a> SQLiteBaseConnection<'a> {
-    fn new(conn: *mut rusqlite::Connection) -> SQLiteBaseConnection<'a> {
+impl<'a> SQLiteBaseStatements<'a> {
+    fn new(conn: *mut rusqlite::Connection) -> SQLiteBaseStatements<'a> {
         let begin_stmt = unsafe { conn.as_ref() }.unwrap().prepare("BEGIN;").unwrap();
 
         let commit_stmt = unsafe { conn.as_ref() }
@@ -214,7 +214,7 @@ impl<'a> SQLiteBaseConnection<'a> {
             .prepare("SAVEPOINT 'X';")
             .unwrap();
 
-        SQLiteBaseConnection {
+        SQLiteBaseStatements {
             begin_stmt,
             commit_stmt,
             rollback_stmt,
@@ -224,8 +224,7 @@ impl<'a> SQLiteBaseConnection<'a> {
 }
 
 pub struct SQLiteTATPConnection<'a> {
-    _conn: Box<rusqlite::Connection>,
-    base: SQLiteBaseConnection<'a>,
+    base: SQLiteBaseStatements<'a>,
     get_subscriber_data_stmt: Statement<'a>,
     get_new_destination_stmt: Statement<'a>,
     get_access_data_stmt: Statement<'a>,
@@ -235,6 +234,7 @@ pub struct SQLiteTATPConnection<'a> {
     get_special_facility_types_stmt: Statement<'a>,
     insert_call_forwarding_stmt: Statement<'a>,
     delete_call_forwarding_stmt: Statement<'a>,
+    _conn: Box<rusqlite::Connection>,
 }
 
 impl<'a> SQLiteTATPConnection<'a> {
@@ -244,7 +244,7 @@ impl<'a> SQLiteTATPConnection<'a> {
     {
         let conn = Box::into_raw(Box::new(rusqlite::Connection::open(path).unwrap()));
 
-        let base = SQLiteBaseConnection::new(conn);
+        let base = SQLiteBaseStatements::new(conn);
 
         let get_subscriber_data_stmt = unsafe { conn.as_ref() }
             .unwrap()
@@ -333,7 +333,6 @@ impl<'a> SQLiteTATPConnection<'a> {
             .unwrap();
 
         SQLiteTATPConnection {
-            _conn: unsafe { Box::from_raw(conn) },
             base,
             get_subscriber_data_stmt,
             get_new_destination_stmt,
@@ -344,6 +343,7 @@ impl<'a> SQLiteTATPConnection<'a> {
             get_special_facility_types_stmt,
             insert_call_forwarding_stmt,
             delete_call_forwarding_stmt,
+            _conn: unsafe { Box::from_raw(conn) },
         }
     }
 }
@@ -487,8 +487,7 @@ impl TATPConnection for SQLiteTATPConnection<'_> {
 }
 
 impl Drop for SQLiteTATPConnection<'_> {
-    fn drop(&mut self) {
-    }
+    fn drop(&mut self) {}
 }
 
 unsafe impl Send for SQLiteTATPConnection<'_> {}
