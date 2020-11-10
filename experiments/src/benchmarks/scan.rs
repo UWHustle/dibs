@@ -154,7 +154,7 @@ impl Generator for ScanGenerator {
     }
 }
 
-pub fn dibs(num_conjuncts: usize, optimization: OptimizationLevel) -> Dibs {
+pub fn dibs(num_conjuncts: usize, optimization: OptimizationLevel, blowup_limit: usize) -> Dibs {
     let scan_predicate = Predicate::conjunction(
         (0..num_conjuncts)
             .map(|i| {
@@ -184,5 +184,11 @@ pub fn dibs(num_conjuncts: usize, optimization: OptimizationLevel) -> Dibs {
         ),
     ];
 
-    Dibs::new(&[None], &templates, optimization, Duration::from_secs(60))
+    Dibs::new(
+        &[None],
+        &templates,
+        optimization,
+        blowup_limit,
+        Duration::from_secs(60),
+    )
 }

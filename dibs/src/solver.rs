@@ -302,6 +302,16 @@ fn solve_disjunction_disjunction(
     })
 }
 
+fn dnf_blowup(p: &Predicate) -> usize {
+    match p {
+        Predicate::Comparison(_) => 1,
+        Predicate::Connective(connective, operands) => match connective {
+            Connective::Conjunction => operands.iter().fold(1, |acc, x| acc * dnf_blowup(x)),
+            Connective::Disjunction => operands.iter().fold(0, |acc, x| acc + dnf_blowup(x)),
+        },
+    }
+}
+
 pub fn prepare(p: &Predicate, q: &Predicate) -> Predicate {
     let mut r = Predicate::conjunction(
         cluster(p, q)
@@ -385,7 +395,17 @@ pub fn evaluate(conflict: &Predicate, p_args: &[Value], q_args: &[Value]) -> boo
     }
 }
 
-pub fn solve_dnf(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Value]) -> bool {
+pub fn solve_dnf(
+    p: &Predicate,
+    p_args: &[Value],
+    q: &Predicate,
+    q_args: &[Value],
+    blowup_limit: usize,
+) -> bool {
+    if dnf_blowup(p) * dnf_blowup(q) > blowup_limit {
+        return true;
+    }
+
     let mut p_dnf = Cow::Borrowed(p);
     if !p_dnf.is_normalized() {
         p_dnf.to_mut().normalize();
@@ -440,7 +460,14 @@ pub fn solve_dnf(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Value
     }
 }
 
-pub fn solve_clustered(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Value]) -> bool {
-    cluster(&p, &q)
-        .all(|(p_conjunct, q_conjunct)| solve_dnf(&p_conjunct, p_args, &q_conjunct, q_args))
+pub fn solve_clustered(
+    p: &Predicate,
+    p_args: &[Value],
+    q: &Predicate,
+    q_args: &[Value],
+    blowup_limit: usize,
+) -> bool {
+    cluster(&p, &q).all(|(p_conjunct, q_conjunct)| {
+        solve_dnf(&p_conjunct, p_args, &q_conjunct, q_args, blowup_limit)
+    })
 }

@@ -185,6 +185,7 @@ pub struct Dibs {
     prepared_requests: Vec<PreparedRequest>,
     inflight_requests: Vec<Vec<RequestBucket>>,
     optimization: OptimizationLevel,
+    blowup_limit: usize,
     timeout: Duration,
     request_count: AtomicUsize,
 }
@@ -194,6 +195,7 @@ impl Dibs {
         filters: &[Option<usize>],
         templates: &[RequestTemplate],
         optimization: OptimizationLevel,
+        blowup_limit: usize,
         timeout: Duration,
     ) -> Dibs {
         let prepared_requests = templates
@@ -223,6 +225,7 @@ impl Dibs {
             prepared_requests,
             inflight_requests,
             optimization,
+            blowup_limit,
             timeout,
             request_count: AtomicUsize::new(0),
         }
@@ -354,6 +357,7 @@ impl Dibs {
                             &request.arguments,
                             &other_template.predicate,
                             &other_request.arguments,
+                            self.blowup_limit,
                         ) {
                             conflicting_requests.push(Arc::clone(other_request));
                         }
@@ -363,6 +367,7 @@ impl Dibs {
                             &request.arguments,
                             &other_template.predicate,
                             &other_request.arguments,
+                            self.blowup_limit,
                         ) {
                             conflicting_requests.push(Arc::clone(other_request));
                         }
@@ -396,6 +401,7 @@ impl Dibs {
                             &request.arguments,
                             &other_template.predicate,
                             &other_request.arguments,
+                            self.blowup_limit,
                         ) {
                             conflicting_requests.push(Arc::clone(other_request));
                         }

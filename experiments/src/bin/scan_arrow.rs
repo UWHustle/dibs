@@ -20,6 +20,7 @@ fn main() {
                 .possible_values(&["ungrouped", "grouped", "prepared", "filtered"])
                 .required(true),
         )
+        .arg(Arg::with_name("blowup_limit").required(true))
         .arg(Arg::with_name("num_workers").required(true))
         .get_matches();
 
@@ -29,9 +30,10 @@ fn main() {
     let num_conjuncts = usize::from_str(matches.value_of("num_conjuncts").unwrap()).unwrap();
     let optimization =
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
+    let blowup_limit = usize::from_str(matches.value_of("blowup_limit").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let dibs = scan::dibs(num_conjuncts, optimization);
+    let dibs = scan::dibs(num_conjuncts, optimization, blowup_limit);
     let shared_state = Arc::new(SharedState::new(dibs));
 
     let db = Arc::new(ArrowScanDatabase::new(num_rows));

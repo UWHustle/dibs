@@ -216,5 +216,11 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
         }))
         .collect::<Vec<_>>();
 
-    Dibs::new(filters, &templates, optimization, Duration::from_secs(60))
+    Dibs::new(
+        filters,
+        &templates,
+        optimization,
+        usize::max_value(),
+        Duration::from_secs(60),
+    )
 }

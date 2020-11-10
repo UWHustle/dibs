@@ -489,7 +489,13 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
         ),
     ];
 
-    Dibs::new(filters, &templates, optimization, Duration::from_secs(60))
+    Dibs::new(
+        filters,
+        &templates,
+        optimization,
+        usize::max_value(),
+        Duration::from_secs(60),
+    )
 }
 
 pub fn uppercase_alphabetic_string(len: usize, rng: &mut ThreadRng) -> String {
