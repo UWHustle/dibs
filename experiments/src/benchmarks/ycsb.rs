@@ -134,7 +134,7 @@ pub fn uniform_generator(
         field_size,
         select_mix,
         num_statements_per_transaction,
-        distributions::Uniform::new(0, num_rows as usize),
+        distributions::Uniform::new(1, num_rows as usize + 1),
     )
 }
 
@@ -168,7 +168,7 @@ where
                 .map(|_| {
                     let transaction_type = rng.gen::<f64>();
                     let field = rng.gen_range(0, NUM_FIELDS);
-                    let user_id = self.distribution.sample(&mut rng) as u32;
+                    let user_id = (self.distribution.sample(&mut rng) - 1) as u32;
 
                     if transaction_type < self.select_mix {
                         YCSBStatement::SelectUser { field, user_id }
