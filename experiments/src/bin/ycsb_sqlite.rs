@@ -1,11 +1,12 @@
 use clap::{App, Arg};
 use dibs::OptimizationLevel;
-use dibs_experiments::sqlite_server::SQLiteYCSBConnection;
+use dibs_experiments::benchmarks::ycsb;
+use dibs_experiments::benchmarks::ycsb::YCSBGenerator;
+use dibs_experiments::systems;
+use dibs_experiments::systems::sqlite::SQLiteYCSBConnection;
 use dibs_experiments::worker::{
     GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, SharedState, Worker,
 };
-use dibs_experiments::ycsb::YCSBGenerator;
-use dibs_experiments::{sqlite_server, ycsb};
 use std::str::FromStr;
 use std::sync::{mpsc, Arc};
 
@@ -35,7 +36,7 @@ fn main() {
     let dibs = ycsb::dibs(optimization);
     let shared_state = Arc::new(SharedState::new(dibs));
 
-    sqlite_server::load_ycsb("ycsb.sqlite", num_rows, field_size);
+    systems::sqlite::load_ycsb("ycsb.sqlite", num_rows, field_size);
 
     let (sender, receiver) = mpsc::sync_channel(0);
 

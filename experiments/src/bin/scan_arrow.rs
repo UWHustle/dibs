@@ -1,9 +1,10 @@
 use clap::{App, Arg};
 use dibs::OptimizationLevel;
-use dibs_experiments::arrow_server::{ArrowScanConnection, ArrowScanDatabase};
-use dibs_experiments::scan::ScanGenerator;
+use dibs_experiments::benchmarks::scan;
+use dibs_experiments::benchmarks::scan::ScanGenerator;
+use dibs_experiments::runner;
+use dibs_experiments::systems::arrow::{ArrowScanConnection, ArrowScanDatabase};
 use dibs_experiments::worker::{SharedState, StandardWorker, Worker};
-use dibs_experiments::{runner, scan};
 use std::str::FromStr;
 use std::sync::Arc;
 

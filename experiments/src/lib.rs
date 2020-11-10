@@ -1,12 +1,9 @@
 use dibs::{AcquireError, Dibs, OptimizationLevel, RequestGuard};
 
-pub mod arrow_server;
+pub mod benchmarks;
 pub mod runner;
-pub mod scan;
-pub mod sqlite_server;
-pub mod tatp;
+pub mod systems;
 pub mod worker;
-pub mod ycsb;
 
 pub trait Procedure<C> {
     fn is_read_only(&self) -> bool;

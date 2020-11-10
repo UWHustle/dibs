@@ -1,11 +1,12 @@
 use clap::{App, Arg};
 use dibs::OptimizationLevel;
-use dibs_experiments::sqlite_server::SQLiteTATPConnection;
-use dibs_experiments::tatp::TATPGenerator;
+use dibs_experiments::benchmarks::tatp;
+use dibs_experiments::benchmarks::tatp::TATPGenerator;
+use dibs_experiments::systems::sqlite::SQLiteTATPConnection;
 use dibs_experiments::worker::{
     GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, SharedState, Worker,
 };
-use dibs_experiments::{runner, sqlite_server, tatp};
+use dibs_experiments::{runner, systems};
 use std::str::FromStr;
 use std::sync::{mpsc, Arc};
 
@@ -31,7 +32,7 @@ fn main() {
     let dibs = tatp::dibs(optimization);
     let shared_state = Arc::new(SharedState::new(dibs));
 
-    sqlite_server::load_tatp("tatp.sqlite", num_rows);
+    systems::sqlite::load_tatp("tatp.sqlite", num_rows);
 
     let (sender, receiver) = mpsc::sync_channel(0);
 

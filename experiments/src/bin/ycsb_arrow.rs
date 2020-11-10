@@ -1,9 +1,10 @@
 use clap::{App, Arg};
 use dibs::OptimizationLevel;
-use dibs_experiments::arrow_server::{ArrowYCSBConnection, ArrowYCSBDatabase};
+use dibs_experiments::benchmarks::ycsb;
+use dibs_experiments::benchmarks::ycsb::YCSBGenerator;
+use dibs_experiments::runner;
+use dibs_experiments::systems::arrow::{ArrowYCSBConnection, ArrowYCSBDatabase};
 use dibs_experiments::worker::{SharedState, StandardWorker, Worker};
-use dibs_experiments::ycsb::YCSBGenerator;
-use dibs_experiments::{runner, ycsb};
 use std::str::FromStr;
 use std::sync::Arc;
 

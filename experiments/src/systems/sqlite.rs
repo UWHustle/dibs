@@ -1,6 +1,7 @@
-use crate::tatp::TATPConnection;
-use crate::ycsb::YCSBConnection;
-use crate::{tatp, ycsb, Connection};
+use crate::benchmarks::tatp::TATPConnection;
+use crate::benchmarks::ycsb::YCSBConnection;
+use crate::benchmarks::{tatp, ycsb};
+use crate::Connection;
 use itertools::Itertools;
 use rand::distributions::Alphanumeric;
 use rand::seq::SliceRandom;

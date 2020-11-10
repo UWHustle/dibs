@@ -1,6 +1,7 @@
-use crate::scan::ScanConnection;
-use crate::tatp::TATPConnection;
-use crate::ycsb::{YCSBConnection, NUM_FIELDS};
+use crate::benchmarks::scan::ScanConnection;
+use crate::benchmarks::tatp::TATPConnection;
+use crate::benchmarks::ycsb;
+use crate::benchmarks::ycsb::YCSBConnection;
 use crate::Connection;
 use arrow::array::{
     ArrayBuilder, BooleanArray, BooleanBuilder, FixedSizeBinaryArray, FixedSizeBinaryBuilder,
@@ -624,7 +625,7 @@ impl ArrowYCSBDatabase {
         user_ids.shuffle(&mut rng);
 
         let mut user_id_builder = UInt32Builder::new(user_ids.len());
-        let mut field_builders = (0..NUM_FIELDS)
+        let mut field_builders = (0..ycsb::NUM_FIELDS)
             .map(|_| FixedSizeBinaryBuilder::new(user_ids.len(), field_size as i32))
             .collect::<Vec<_>>();
 
