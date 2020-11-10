@@ -101,7 +101,9 @@ impl YCSBGenerator {
     }
 }
 
-impl Generator<YCSBProcedure> for YCSBGenerator {
+impl Generator for YCSBGenerator {
+    type Item = YCSBProcedure;
+
     fn next(&self) -> YCSBProcedure {
         let mut rng = thread_rng();
 

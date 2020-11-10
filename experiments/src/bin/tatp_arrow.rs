@@ -2,7 +2,7 @@ use clap::{App, Arg};
 use dibs::OptimizationLevel;
 use dibs_experiments::arrow_server::{ArrowTATPConnection, ArrowTATPDatabase};
 use dibs_experiments::tatp::TATPGenerator;
-use dibs_experiments::worker::{SharedState, Worker};
+use dibs_experiments::worker::{SharedState, StandardWorker, Worker};
 use dibs_experiments::{runner, tatp};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -28,15 +28,15 @@ fn main() {
 
     let db = Arc::new(ArrowTATPDatabase::new(num_rows));
 
-    let workers = (0..num_workers)
-        .map(|_| {
-            Worker::new(
-                Arc::clone(&shared_state),
-                TATPGenerator::new(num_rows),
-                ArrowTATPConnection::new(Arc::clone(&db)),
-            )
-        })
-        .collect();
+    let mut workers: Vec<Box<dyn Worker + Send>> = vec![];
+
+    for _ in 0..num_workers {
+        workers.push(Box::new(StandardWorker::new(
+            Arc::clone(&shared_state),
+            TATPGenerator::new(num_rows),
+            ArrowTATPConnection::new(Arc::clone(&db)),
+        )));
+    }
 
     runner::run(workers, shared_state);
 }

@@ -19,8 +19,9 @@ pub trait Procedure<C> {
     ) -> Result<Vec<RequestGuard>, AcquireError>;
 }
 
-pub trait Generator<P> {
-    fn next(&self) -> P;
+pub trait Generator {
+    type Item;
+    fn next(&self) -> Self::Item;
 }
 
 pub trait Statement {

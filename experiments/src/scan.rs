@@ -130,7 +130,9 @@ impl ScanGenerator {
     }
 }
 
-impl Generator<ScanProcedure> for ScanGenerator {
+impl Generator for ScanGenerator {
+    type Item = ScanProcedure;
+
     fn next(&self) -> ScanProcedure {
         let mut rng = thread_rng();
 

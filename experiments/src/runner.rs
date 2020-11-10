@@ -1,15 +1,9 @@
 use crate::worker::{SharedState, Worker};
-use crate::{Generator, Procedure};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-pub fn run<G, P, C>(workers: Vec<Worker<G, P, C>>, shared_state: Arc<SharedState>)
-where
-    G: 'static + Generator<P> + Send,
-    P: 'static + Procedure<C> + Send,
-    C: 'static + Send,
-{
+pub fn run(workers: Vec<Box<dyn Worker + Send>>, shared_state: Arc<SharedState>) {
     let warmup_duration = Duration::from_secs(5);
     let measurement_duration = Duration::from_secs(10);
 

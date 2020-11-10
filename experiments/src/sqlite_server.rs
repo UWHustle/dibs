@@ -3,7 +3,7 @@ use crate::{tatp, Connection};
 use itertools::Itertools;
 use rand::seq::SliceRandom;
 use rand::Rng;
-use rusqlite::{params, Statement};
+use rusqlite::{params, ErrorCode, Statement};
 use std::path::Path;
 
 pub fn load_tatp<P>(path: P, num_rows: u32)
@@ -19,10 +19,8 @@ where
     //     libsqlite3_sys::sqlite3_config(libsqlite3_sys::SQLITE_CONFIG_MEMSTATUS, 0);
     // }
 
-    conn.execute("PRAGMA journal_mode = WAL;", params![])
-        .unwrap();
-    conn.execute("PRAGMA synchronous = FULL;", params![])
-        .unwrap();
+    conn.pragma_update(None, "journal_mode", &"WAL").unwrap();
+    conn.pragma_update(None, "synchronous", &"FULL").unwrap();
 
     conn.execute("DROP TABLE IF EXISTS subscriber;", params![])
         .unwrap();
@@ -466,15 +464,30 @@ impl TATPConnection for SQLiteTATPConnection<'_> {
         end_time: u8,
         numberx: &str,
     ) {
-        self.insert_call_forwarding_stmt
+        if let Err(error) = self
+            .insert_call_forwarding_stmt
             .execute(params![s_id, sf_type, start_time, end_time, numberx])
-            .unwrap();
+        {
+            match &error {
+                rusqlite::Error::SqliteFailure(sqlite_error, _) => {
+                    if sqlite_error.code != ErrorCode::ConstraintViolation {
+                        panic!(error.to_string())
+                    }
+                }
+                _ => panic!(error.to_string()),
+            }
+        }
     }
 
     fn delete_call_forwarding(&mut self, s_id: u32, sf_type: u8, start_time: u8) {
         self.delete_call_forwarding_stmt
             .execute(params![s_id, sf_type, start_time])
             .unwrap();
+    }
+}
+
+impl Drop for SQLiteTATPConnection<'_> {
+    fn drop(&mut self) {
     }
 }
 

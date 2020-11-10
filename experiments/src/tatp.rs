@@ -332,7 +332,9 @@ impl TATPGenerator {
     }
 }
 
-impl Generator<TATPProcedure> for TATPGenerator {
+impl Generator for TATPGenerator {
+    type Item = TATPProcedure;
+
     fn next(&self) -> TATPProcedure {
         let mut rng = thread_rng();
 

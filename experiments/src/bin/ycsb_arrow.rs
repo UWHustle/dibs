@@ -1,7 +1,7 @@
 use clap::{App, Arg};
 use dibs::OptimizationLevel;
 use dibs_experiments::arrow_server::{ArrowYCSBConnection, ArrowYCSBDatabase};
-use dibs_experiments::worker::{SharedState, Worker};
+use dibs_experiments::worker::{SharedState, StandardWorker, Worker};
 use dibs_experiments::ycsb::YCSBGenerator;
 use dibs_experiments::{runner, ycsb};
 use std::str::FromStr;
@@ -34,15 +34,15 @@ fn main() {
 
     let db = Arc::new(ArrowYCSBDatabase::new(num_rows, num_fields, field_size));
 
-    let workers = (0..num_workers)
-        .map(|_| {
-            Worker::new(
-                Arc::clone(&shared_state),
-                YCSBGenerator::new(num_rows, field_size, select_mix),
-                ArrowYCSBConnection::new(Arc::clone(&db)),
-            )
-        })
-        .collect();
+    let mut workers: Vec<Box<dyn Worker + Send>> = vec![];
+
+    for _ in 0..num_workers {
+        workers.push(Box::new(StandardWorker::new(
+            Arc::clone(&shared_state),
+            YCSBGenerator::new(num_rows, field_size, select_mix),
+            ArrowYCSBConnection::new(Arc::clone(&db)),
+        )));
+    }
 
     runner::run(workers, shared_state);
 }

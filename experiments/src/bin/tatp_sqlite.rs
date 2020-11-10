@@ -2,10 +2,12 @@ use clap::{App, Arg};
 use dibs::OptimizationLevel;
 use dibs_experiments::sqlite_server::SQLiteTATPConnection;
 use dibs_experiments::tatp::TATPGenerator;
-use dibs_experiments::worker::{SharedState, Worker};
+use dibs_experiments::worker::{
+    GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, SharedState, Worker,
+};
 use dibs_experiments::{runner, sqlite_server, tatp};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 fn main() {
     let matches = App::new("TATP on SQLite")
@@ -28,15 +30,26 @@ fn main() {
 
     sqlite_server::load_tatp("tatp.sqlite", num_rows);
 
-    let workers = (0..num_workers)
-        .map(|_| {
-            Worker::new(
-                Arc::clone(&shared_state),
-                TATPGenerator::new(num_rows),
-                SQLiteTATPConnection::new("tatp.sqlite"),
-            )
-        })
-        .collect();
+    let (sender, receiver) = mpsc::sync_channel(0);
+
+    let mut workers: Vec<Box<dyn Worker + Send>> = vec![Box::new(GroupCommitWorker::new(
+        Arc::clone(&shared_state),
+        ReceivingGenerator::new(TATPGenerator::new(num_rows), receiver),
+        SQLiteTATPConnection::new("tatp.sqlite"),
+        1,
+    ))];
+
+    for _ in 1..num_workers {
+        let generator: ReadOnlyGenerator<TATPGenerator, SQLiteTATPConnection> =
+            ReadOnlyGenerator::new(TATPGenerator::new(num_rows), sender.clone());
+
+        workers.push(Box::new(GroupCommitWorker::new(
+            Arc::clone(&shared_state),
+            generator,
+            SQLiteTATPConnection::new("tatp.sqlite"),
+            1,
+        )))
+    }
 
     runner::run(workers, shared_state);
 }
