@@ -51,6 +51,7 @@ fn main() {
         .arg(Arg::with_name("num_transactions_per_group").required(true))
         .arg(Arg::with_name("field_size").required(true))
         .arg(Arg::with_name("select_mix").required(true))
+        .arg(Arg::with_name("num_statements_per_transaction").required(true))
         .arg(Arg::with_name("skew").required(true))
         .arg(
             Arg::with_name("optimization")
@@ -65,6 +66,8 @@ fn main() {
         usize::from_str(matches.value_of("num_transactions_per_group").unwrap()).unwrap();
     let field_size = usize::from_str(matches.value_of("field_size").unwrap()).unwrap();
     let select_mix = f64::from_str(matches.value_of("select_mix").unwrap()).unwrap();
+    let num_statements_per_transaction =
+        usize::from_str(matches.value_of("num_statements_per_transaction").unwrap()).unwrap();
     let skew = f64::from_str(matches.value_of("skew").unwrap()).unwrap();
     let optimization =
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
@@ -80,14 +83,29 @@ fn main() {
             num_transactions_per_group,
             num_workers,
             &shared_state,
-            || ycsb::uniform_generator(num_rows, field_size, select_mix),
+            || {
+                ycsb::uniform_generator(
+                    num_rows,
+                    field_size,
+                    select_mix,
+                    num_statements_per_transaction,
+                )
+            },
         )
     } else {
         make_workers(
             num_transactions_per_group,
             num_workers,
             &shared_state,
-            || ycsb::zipf_generator(num_rows, field_size, select_mix, skew),
+            || {
+                ycsb::zipf_generator(
+                    num_rows,
+                    field_size,
+                    select_mix,
+                    num_statements_per_transaction,
+                    skew,
+                )
+            },
         )
     };
 
