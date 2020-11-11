@@ -1,5 +1,6 @@
 use crate::predicate::{ComparisonOperator, Connective, Predicate, Value};
 use fnv::FnvHashMap;
+use rand::Rng;
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -317,15 +318,14 @@ impl Dibs {
             buckets,
         };
 
+        let timeout = self.timeout.mul_f32(rand::thread_rng().gen_range(0.8, 1.2));
+
         for conflicting_request in &conflicting_requests {
             if conflicting_request.group_id == request.group_id {
                 return Err(AcquireError::GroupConflict);
             }
 
-            if conflicting_request
-                .await_completion(self.timeout)
-                .timed_out()
-            {
+            if conflicting_request.await_completion(timeout).timed_out() {
                 return Err(AcquireError::Timeout(conflicting_request.transaction_id));
             }
         }

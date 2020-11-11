@@ -166,14 +166,19 @@ where
 
             self.connection.begin();
 
-            procedure
-                .execute(
-                    group_id,
-                    transaction_id,
-                    &self.shared_state.dibs,
-                    &mut self.connection,
-                )
-                .unwrap();
+            loop {
+                if procedure
+                    .execute(
+                        group_id,
+                        transaction_id,
+                        &self.shared_state.dibs,
+                        &mut self.connection,
+                    )
+                    .is_ok()
+                {
+                    break;
+                }
+            }
 
             self.connection.commit();
 
@@ -237,7 +242,7 @@ where
                     Ok(mut guards) => {
                         group_guards.append(&mut guards);
                         i += 1;
-                    },
+                    }
                     Err(_) => {
                         self.connection.rollback();
                         self.connection.commit();
