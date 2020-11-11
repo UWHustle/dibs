@@ -1,7 +1,7 @@
 use crate::benchmarks::scan::ScanConnection;
 use crate::benchmarks::tatp::TATPConnection;
-use crate::benchmarks::ycsb;
 use crate::benchmarks::ycsb::YCSBConnection;
+use crate::benchmarks::{tatp, ycsb};
 use crate::Connection;
 use arrow::array::{
     ArrayBuilder, BooleanArray, BooleanBuilder, FixedSizeBinaryArray, FixedSizeBinaryBuilder,
@@ -176,10 +176,10 @@ impl AccessInfo {
                 data1_builder.append_value(rng.gen()).unwrap();
                 data2_builder.append_value(rng.gen()).unwrap();
                 data3_builder
-                    .append_value(&(0..3).map(|_| rng.gen()).collect::<Vec<_>>())
+                    .append_value(tatp::uppercase_alphabetic_string(3, &mut rng).as_bytes())
                     .unwrap();
                 data4_builder
-                    .append_value(&(0..5).map(|_| rng.gen()).collect::<Vec<_>>())
+                    .append_value(tatp::uppercase_alphabetic_string(5, &mut rng).as_bytes())
                     .unwrap();
                 index.insert((s_id.unwrap(), *ai_type), s_id_builder.len() - 1);
             }
@@ -294,7 +294,7 @@ impl CallForwarding {
                     .append_value(start_time + rng.gen_range(1, 9))
                     .unwrap();
                 numberx_builder
-                    .append_value(&(0..15).map(|_| rng.gen()).collect::<Vec<_>>())
+                    .append_value(tatp::uppercase_alphabetic_string(15, &mut rng).as_bytes())
                     .unwrap();
                 sub_index.insert(sf_type.unwrap(), s_id_builder.len() - 1);
             }
