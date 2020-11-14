@@ -1,11 +1,9 @@
 use clap::{App, Arg};
-use dibs::OptimizationLevel;
+use dibs::{Dibs, OptimizationLevel};
 use dibs_experiments::benchmarks::ycsb;
 use dibs_experiments::benchmarks::ycsb::YCSBGenerator;
 use dibs_experiments::systems::sqlite::SQLiteYCSBConnection;
-use dibs_experiments::worker::{
-    GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, SharedState, Worker,
-};
+use dibs_experiments::worker::{GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, Worker};
 use dibs_experiments::{runner, systems};
 use rand::distributions::Distribution;
 use std::str::FromStr;
@@ -14,7 +12,7 @@ use std::sync::{mpsc, Arc};
 fn make_workers<F, D>(
     num_transactions_per_group: usize,
     num_workers: usize,
-    shared_state: &Arc<SharedState>,
+    dibs: &Arc<Dibs>,
     make_generator: F,
 ) -> Vec<Box<dyn Worker + Send>>
 where
@@ -24,18 +22,20 @@ where
     let (sender, receiver) = mpsc::sync_channel(0);
 
     let mut workers: Vec<Box<dyn Worker + Send>> = vec![Box::new(GroupCommitWorker::new(
-        Arc::clone(shared_state),
+        0,
+        Arc::clone(dibs),
         ReceivingGenerator::new(make_generator(), receiver),
         SQLiteYCSBConnection::new("ycsb.sqlite"),
         num_transactions_per_group,
     ))];
 
-    for _ in 1..num_workers {
+    for worker_id in 1..num_workers {
         let generator: ReadOnlyGenerator<YCSBGenerator<D>, SQLiteYCSBConnection> =
             ReadOnlyGenerator::new(make_generator(), sender.clone());
 
         workers.push(Box::new(GroupCommitWorker::new(
-            Arc::clone(&shared_state),
+            worker_id,
+            Arc::clone(&dibs),
             generator,
             SQLiteYCSBConnection::new("ycsb.sqlite"),
             num_transactions_per_group,
@@ -73,41 +73,30 @@ fn main() {
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let dibs = ycsb::dibs(optimization);
-    let shared_state = Arc::new(SharedState::new(dibs));
+    let dibs = Arc::new(ycsb::dibs(optimization));
 
     systems::sqlite::load_ycsb("ycsb.sqlite", num_rows, field_size);
 
     let workers = if skew == 0.0 {
-        make_workers(
-            num_transactions_per_group,
-            num_workers,
-            &shared_state,
-            || {
-                ycsb::uniform_generator(
-                    num_rows,
-                    field_size,
-                    select_mix,
-                    num_statements_per_transaction,
-                )
-            },
-        )
+        make_workers(num_transactions_per_group, num_workers, &dibs, || {
+            ycsb::uniform_generator(
+                num_rows,
+                field_size,
+                select_mix,
+                num_statements_per_transaction,
+            )
+        })
     } else {
-        make_workers(
-            num_transactions_per_group,
-            num_workers,
-            &shared_state,
-            || {
-                ycsb::zipf_generator(
-                    num_rows,
-                    field_size,
-                    select_mix,
-                    num_statements_per_transaction,
-                    skew,
-                )
-            },
-        )
+        make_workers(num_transactions_per_group, num_workers, &dibs, || {
+            ycsb::zipf_generator(
+                num_rows,
+                field_size,
+                select_mix,
+                num_statements_per_transaction,
+                skew,
+            )
+        })
     };
 
-    runner::run(workers, shared_state);
+    runner::run(workers);
 }

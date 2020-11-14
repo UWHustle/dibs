@@ -2,7 +2,7 @@ use clap::{App, Arg};
 use dibs::OptimizationLevel;
 use dibs_experiments::benchmarks::ycsb;
 use dibs_experiments::systems::mysql::MySQLYCSBConnection;
-use dibs_experiments::worker::{SharedState, StandardWorker, Worker};
+use dibs_experiments::worker::{StandardWorker, Worker};
 use dibs_experiments::{runner, systems};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -32,17 +32,17 @@ fn main() {
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let dibs = ycsb::dibs(optimization);
-    let shared_state = Arc::new(SharedState::new(dibs));
+    let dibs = Arc::new(ycsb::dibs(optimization));
 
     systems::mysql::load_ycsb(num_rows, field_size);
 
     let mut workers: Vec<Box<dyn Worker + Send>> = vec![];
 
-    for _ in 0..num_workers {
+    for worker_id in 0..num_workers {
         if skew == 0.0 {
             workers.push(Box::new(StandardWorker::new(
-                Arc::clone(&shared_state),
+                worker_id,
+                Arc::clone(&dibs),
                 ycsb::uniform_generator(
                     num_rows,
                     field_size,
@@ -53,7 +53,8 @@ fn main() {
             )));
         } else {
             workers.push(Box::new(StandardWorker::new(
-                Arc::clone(&shared_state),
+                worker_id,
+                Arc::clone(&dibs),
                 ycsb::zipf_generator(
                     num_rows,
                     field_size,
@@ -66,5 +67,5 @@ fn main() {
         }
     }
 
-    runner::run(workers, shared_state);
+    runner::run(workers);
 }

@@ -4,7 +4,7 @@ use dibs_experiments::benchmarks::tatp;
 use dibs_experiments::benchmarks::tatp::TATPGenerator;
 use dibs_experiments::runner;
 use dibs_experiments::systems::arrow::{ArrowTATPConnection, ArrowTATPDatabase};
-use dibs_experiments::worker::{SharedState, StandardWorker, Worker};
+use dibs_experiments::worker::{StandardWorker, Worker};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -24,20 +24,20 @@ fn main() {
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let dibs = tatp::dibs(optimization);
-    let shared_state = Arc::new(SharedState::new(dibs));
+    let dibs = Arc::new(tatp::dibs(optimization));
 
     let db = Arc::new(ArrowTATPDatabase::new(num_rows));
 
     let mut workers: Vec<Box<dyn Worker + Send>> = vec![];
 
-    for _ in 0..num_workers {
+    for worker_id in 0..num_workers {
         workers.push(Box::new(StandardWorker::new(
-            Arc::clone(&shared_state),
+            worker_id,
+            Arc::clone(&dibs),
             TATPGenerator::new(num_rows),
             ArrowTATPConnection::new(Arc::clone(&db)),
         )));
     }
 
-    runner::run(workers, shared_state);
+    runner::run(workers);
 }

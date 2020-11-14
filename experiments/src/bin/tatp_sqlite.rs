@@ -3,9 +3,7 @@ use dibs::OptimizationLevel;
 use dibs_experiments::benchmarks::tatp;
 use dibs_experiments::benchmarks::tatp::TATPGenerator;
 use dibs_experiments::systems::sqlite::SQLiteTATPConnection;
-use dibs_experiments::worker::{
-    GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, SharedState, Worker,
-};
+use dibs_experiments::worker::{GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, Worker};
 use dibs_experiments::{runner, systems};
 use std::str::FromStr;
 use std::sync::{mpsc, Arc};
@@ -29,31 +27,32 @@ fn main() {
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let dibs = tatp::dibs(optimization);
-    let shared_state = Arc::new(SharedState::new(dibs));
+    let dibs = Arc::new(tatp::dibs(optimization));
 
     systems::sqlite::load_tatp("tatp.sqlite", num_rows);
 
     let (sender, receiver) = mpsc::sync_channel(0);
 
     let mut workers: Vec<Box<dyn Worker + Send>> = vec![Box::new(GroupCommitWorker::new(
-        Arc::clone(&shared_state),
+        0,
+        Arc::clone(&dibs),
         ReceivingGenerator::new(TATPGenerator::new(num_rows), receiver),
         SQLiteTATPConnection::new("tatp.sqlite"),
         num_transactions_per_group,
     ))];
 
-    for _ in 1..num_workers {
+    for worker_id in 1..num_workers {
         let generator: ReadOnlyGenerator<TATPGenerator, SQLiteTATPConnection> =
             ReadOnlyGenerator::new(TATPGenerator::new(num_rows), sender.clone());
 
         workers.push(Box::new(GroupCommitWorker::new(
-            Arc::clone(&shared_state),
+            worker_id,
+            Arc::clone(&dibs),
             generator,
             SQLiteTATPConnection::new("tatp.sqlite"),
             num_transactions_per_group,
         )))
     }
 
-    runner::run(workers, shared_state);
+    runner::run(workers);
 }

@@ -5,47 +5,36 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::sync::Arc;
 
-pub struct SharedState {
-    group_counter: AtomicUsize,
-    begin_counter: AtomicUsize,
-    commit_counter: AtomicUsize,
-    terminate_flag: AtomicBool,
-    dibs: Dibs,
+struct State {
+    group_counter: usize,
+    begin_counter: usize,
+    dibs: Arc<Dibs>,
 }
 
-impl SharedState {
-    pub fn new(dibs: Dibs) -> SharedState {
-        SharedState {
-            group_counter: AtomicUsize::new(0),
-            begin_counter: AtomicUsize::new(0),
-            commit_counter: AtomicUsize::new(0),
-            terminate_flag: AtomicBool::new(false),
+impl State {
+    fn new(worker_id: usize, dibs: Arc<Dibs>) -> State {
+        assert!(worker_id < 1024);
+        let counter = worker_id * usize::max_value() / 1024;
+
+        State {
+            group_counter: counter,
+            begin_counter: counter,
             dibs,
         }
     }
 
-    pub fn get_commit_count(&self) -> usize {
-        self.commit_counter.load(Ordering::Relaxed)
+    fn group_id(&mut self) -> usize {
+        State::fetch_inc(&mut self.group_counter)
     }
 
-    pub fn terminate(&self) {
-        self.terminate_flag.store(true, Ordering::Relaxed);
+    fn transaction_id(&mut self) -> usize {
+        State::fetch_inc(&mut self.begin_counter)
     }
 
-    fn group_id(&self) -> usize {
-        self.group_counter.fetch_add(1, Ordering::Relaxed)
-    }
-
-    fn transaction_id(&self) -> usize {
-        self.begin_counter.fetch_add(1, Ordering::Relaxed)
-    }
-
-    fn increment_commit_count(&self, val: usize) {
-        self.commit_counter.fetch_add(val, Ordering::Relaxed);
-    }
-
-    fn is_terminated(&self) -> bool {
-        self.terminate_flag.load(Ordering::Relaxed)
+    fn fetch_inc(x: &mut usize) -> usize {
+        let prev = *x;
+        *x += 1;
+        prev
     }
 }
 
@@ -128,23 +117,24 @@ where
 }
 
 pub trait Worker {
-    fn run(&mut self);
+    fn run(&mut self, commits: Arc<AtomicUsize>, terminate: Arc<AtomicBool>);
 }
 
 pub struct StandardWorker<G, C> {
-    shared_state: Arc<SharedState>,
+    state: State,
     generator: G,
     connection: C,
 }
 
 impl<G, C> StandardWorker<G, C> {
     pub fn new(
-        shared_state: Arc<SharedState>,
+        worker_id: usize,
+        dibs: Arc<Dibs>,
         generator: G,
         connection: C,
     ) -> StandardWorker<G, C> {
         StandardWorker {
-            shared_state,
+            state: State::new(worker_id, dibs),
             generator,
             connection,
         }
@@ -157,11 +147,12 @@ where
     G::Item: Procedure<C>,
     C: Connection,
 {
-    fn run(&mut self) {
+    fn run(&mut self, commits: Arc<AtomicUsize>, terminate: Arc<AtomicBool>) {
         let mut guards = vec![];
 
-        while !self.shared_state.is_terminated() {
-            let transaction_id = self.shared_state.transaction_id();
+        while !terminate.load(Ordering::Relaxed) {
+            let group_id = self.state.group_id();
+            let transaction_id = self.state.transaction_id();
 
             let procedure = self.generator.next();
 
@@ -169,9 +160,9 @@ where
 
             loop {
                 let result = procedure.execute(
+                    group_id,
                     transaction_id,
-                    transaction_id,
-                    &self.shared_state.dibs,
+                    &self.state.dibs,
                     &mut self.connection,
                     &mut guards,
                 );
@@ -185,7 +176,7 @@ where
 
             self.connection.commit();
 
-            self.shared_state.increment_commit_count(1);
+            commits.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -193,7 +184,7 @@ where
 unsafe impl<G, C> Send for StandardWorker<G, C> {}
 
 pub struct GroupCommitWorker<G, C> {
-    shared_state: Arc<SharedState>,
+    state: State,
     generator: G,
     connection: C,
     num_transactions_per_group: usize,
@@ -201,13 +192,14 @@ pub struct GroupCommitWorker<G, C> {
 
 impl<G, C> GroupCommitWorker<G, C> {
     pub fn new(
-        shared_state: Arc<SharedState>,
+        worker_id: usize,
+        dibs: Arc<Dibs>,
         generator: G,
         connection: C,
         num_transactions_per_group: usize,
     ) -> GroupCommitWorker<G, C> {
         GroupCommitWorker {
-            shared_state,
+            state: State::new(worker_id, dibs),
             generator,
             connection,
             num_transactions_per_group,
@@ -221,16 +213,16 @@ where
     G::Item: Procedure<C>,
     C: Connection,
 {
-    fn run(&mut self) {
-        while !self.shared_state.is_terminated() {
-            let group_id = self.shared_state.group_id();
+    fn run(&mut self, commits: Arc<AtomicUsize>, terminate: Arc<AtomicBool>) {
+        while !terminate.load(Ordering::Relaxed) {
+            let group_id = self.state.group_id();
             let mut guards = vec![];
             let mut i = 0;
 
             self.connection.begin();
 
             while i < self.num_transactions_per_group {
-                let transaction_id = self.shared_state.transaction_id();
+                let transaction_id = self.state.transaction_id();
 
                 let procedure = self.generator.next();
 
@@ -239,7 +231,7 @@ where
                 match procedure.execute(
                     group_id,
                     transaction_id,
-                    &self.shared_state.dibs,
+                    &self.state.dibs,
                     &mut self.connection,
                     &mut guards,
                 ) {
@@ -252,7 +244,7 @@ where
 
                         guards.clear();
 
-                        self.shared_state.increment_commit_count(i);
+                        commits.fetch_add(i, Ordering::Relaxed);
                         i = 0;
 
                         self.connection.begin();
@@ -265,7 +257,7 @@ where
 
             self.connection.commit();
 
-            self.shared_state.increment_commit_count(i);
+            commits.fetch_add(i, Ordering::Relaxed);
         }
     }
 }
