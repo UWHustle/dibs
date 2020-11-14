@@ -159,7 +159,6 @@ where
 {
     fn run(&mut self) {
         while !self.shared_state.is_terminated() {
-            let group_id = self.shared_state.group_id();
             let transaction_id = self.shared_state.transaction_id();
 
             let procedure = self.generator.next();
@@ -169,7 +168,7 @@ where
             loop {
                 if procedure
                     .execute(
-                        group_id,
+                        transaction_id,
                         transaction_id,
                         &self.shared_state.dibs,
                         &mut self.connection,

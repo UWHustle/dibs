@@ -87,20 +87,38 @@ struct PreparedRequest {
 
 type RequestBucket = Arc<Mutex<FnvHashMap<usize, Arc<Request>>>>;
 
-pub struct RequestGuard {
-    id: usize,
-    buckets: Vec<RequestBucket>,
+pub enum RequestGuard {
+    Unfiltered {
+        id: usize,
+        buckets: Vec<RequestBucket>,
+    },
+    Filtered {
+        id: usize,
+        bucket: RequestBucket,
+    },
 }
 
 impl Drop for RequestGuard {
     fn drop(&mut self) {
-        for bucket in &self.buckets {
-            bucket
-                .lock()
-                .unwrap()
-                .remove(&self.id)
-                .expect(&format!("no request with id {}", self.id))
-                .complete();
+        match self {
+            RequestGuard::Unfiltered { id, buckets } => {
+                for bucket in buckets {
+                    bucket
+                        .lock()
+                        .unwrap()
+                        .remove(id)
+                        .expect(&format!("no request with id {}", id))
+                        .complete();
+                }
+            }
+            RequestGuard::Filtered { id, bucket } => {
+                bucket
+                    .lock()
+                    .unwrap()
+                    .remove(id)
+                    .expect(&format!("no request with id {}", id))
+                    .complete();
+            }
         }
     }
 }
@@ -238,79 +256,92 @@ impl Dibs {
         template_id: usize,
         arguments: Vec<Value>,
     ) -> Result<RequestGuard, AcquireError> {
-        let request_variant = match self.optimization {
-            OptimizationLevel::Ungrouped | OptimizationLevel::Grouped => {
-                RequestVariant::AdHoc(self.prepared_requests[template_id].template.clone())
-            }
-            _ => RequestVariant::Prepared(template_id),
-        };
-
-        let request = Arc::new(Request::new(
-            group_id,
-            transaction_id,
-            request_variant,
-            arguments,
-        ));
-
         let request_id = self.request_count.fetch_add(1, Ordering::Relaxed);
 
-        let mut conflicting_requests = vec![];
+        let mut conflicting_requests: Vec<Arc<Request>>;
+        let guard: RequestGuard;
 
-        let buckets = match &request.variant {
-            RequestVariant::AdHoc(template) => {
+        match self.optimization {
+            OptimizationLevel::Ungrouped | OptimizationLevel::Grouped => {
+                let template = &self.prepared_requests[template_id].template;
+
+                let request = Arc::new(Request::new(
+                    group_id,
+                    transaction_id,
+                    RequestVariant::AdHoc(template.clone()),
+                    arguments,
+                ));
+
                 let buckets = &self.inflight_requests[template.table];
+
+                conflicting_requests = vec![];
+
                 for bucket in buckets {
                     conflicting_requests
                         .extend(self.solve_ad_hoc(request_id, &request, template, bucket));
                 }
 
-                buckets.clone()
+                guard = RequestGuard::Unfiltered {
+                    id: request_id,
+                    buckets: buckets.clone(),
+                };
             }
 
-            &RequestVariant::Prepared(prepared_id) => {
-                let prepared_request = &self.prepared_requests[prepared_id];
+            OptimizationLevel::Prepared | OptimizationLevel::Filtered => {
+                let prepared_request = &self.prepared_requests[template_id];
+
+                let request = Arc::new(Request::new(
+                    group_id,
+                    transaction_id,
+                    RequestVariant::Prepared(template_id),
+                    arguments,
+                ));
+
                 let buckets = &self.inflight_requests[prepared_request.template.table];
 
                 match prepared_request.filter {
                     Some(filter) => {
-                        let bucket_index = match request.arguments[filter] {
-                            Value::Integer(v) => v % buckets.len(),
+                        let bucket_index = match &request.arguments[filter] {
+                            &Value::Integer(v) => v % buckets.len(),
                             _ => panic!("filtering on non-integer columns is not yet supported"),
                         };
 
                         let bucket = &buckets[bucket_index];
 
                         conflicting_requests =
-                            self.solve_prepared(request_id, &request, prepared_id, bucket);
+                            self.solve_prepared(request_id, &request, template_id, bucket);
 
-                        vec![Arc::clone(bucket)]
+                        guard = RequestGuard::Filtered {
+                            id: request_id,
+                            bucket: Arc::clone(&bucket),
+                        }
                     }
 
                     None => {
+                        conflicting_requests = vec![];
+
                         for bucket in buckets {
                             conflicting_requests.extend(self.solve_prepared(
                                 request_id,
                                 &request,
-                                prepared_id,
+                                template_id,
                                 bucket,
                             ));
                         }
 
-                        buckets.clone()
+                        guard = RequestGuard::Unfiltered {
+                            id: request_id,
+                            buckets: buckets.clone(),
+                        }
                     }
                 }
             }
         };
 
-        let guard = RequestGuard {
-            id: request_id,
-            buckets,
-        };
-
         let timeout = self.timeout.mul_f32(rand::thread_rng().gen_range(0.8, 1.2));
 
         for conflicting_request in &conflicting_requests {
-            if conflicting_request.group_id == request.group_id {
+            if conflicting_request.group_id == group_id {
                 return Err(AcquireError::GroupConflict);
             }
 

@@ -4,8 +4,8 @@ use std::thread;
 use std::time::Duration;
 
 pub fn run(workers: Vec<Box<dyn Worker + Send>>, shared_state: Arc<SharedState>) {
-    let warmup_duration = Duration::from_secs(10);
-    let measurement_duration = Duration::from_secs(60);
+    let warmup_duration = Duration::from_secs(5);
+    let measurement_duration = Duration::from_secs(10);
 
     let handles = core_affinity::get_core_ids()
         .unwrap()
