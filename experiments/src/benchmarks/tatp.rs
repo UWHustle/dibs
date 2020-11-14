@@ -1,9 +1,9 @@
 use crate::{Generator, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
 use dibs::{AcquireError, Dibs, OptimizationLevel, RequestGuard, RequestTemplate};
+use fnv::FnvHashSet;
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
-use std::collections::HashSet;
 use std::time::Duration;
 
 pub trait TATPConnection {
@@ -410,14 +410,14 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
         RequestTemplate::new(
             0,
             (0..33).collect(),
-            HashSet::new(),
+            FnvHashSet::default(),
             Predicate::comparison(ComparisonOperator::Eq, 0, 0),
         ),
         // (1) Get new destination (special facility).
         RequestTemplate::new(
             2,
             (0..3).collect(),
-            HashSet::new(),
+            FnvHashSet::default(),
             Predicate::conjunction(vec![
                 Predicate::comparison(ComparisonOperator::Eq, 0, 0),
                 Predicate::comparison(ComparisonOperator::Eq, 1, 1),
@@ -427,7 +427,7 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
         RequestTemplate::new(
             3,
             (0..5).collect(),
-            HashSet::new(),
+            FnvHashSet::default(),
             Predicate::conjunction(vec![
                 Predicate::comparison(ComparisonOperator::Eq, 0, 0),
                 Predicate::comparison(ComparisonOperator::Eq, 1, 1),
@@ -439,7 +439,7 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
         RequestTemplate::new(
             1,
             (0..6).collect(),
-            HashSet::new(),
+            FnvHashSet::default(),
             Predicate::conjunction(vec![
                 Predicate::comparison(ComparisonOperator::Eq, 0, 0),
                 Predicate::comparison(ComparisonOperator::Eq, 1, 1),
@@ -473,13 +473,13 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
         RequestTemplate::new(
             2,
             (0..2).collect(),
-            HashSet::new(),
+            FnvHashSet::default(),
             Predicate::comparison(ComparisonOperator::Eq, 0, 0),
         ),
         // (8) Insert/delete call forwarding.
         RequestTemplate::new(
             3,
-            HashSet::new(),
+            FnvHashSet::default(),
             (0..5).collect(),
             Predicate::conjunction(vec![
                 Predicate::comparison(ComparisonOperator::Eq, 0, 0),

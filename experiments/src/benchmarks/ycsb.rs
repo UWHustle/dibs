@@ -1,9 +1,9 @@
 use crate::{Generator, OptimizationLevel, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
 use dibs::{AcquireError, Dibs, RequestGuard, RequestTemplate};
+use fnv::FnvHashSet;
 use rand::distributions::Alphanumeric;
 use rand::{distributions, thread_rng, Rng};
-use std::collections::HashSet;
 use std::time::Duration;
 
 pub const NUM_FIELDS: usize = 10;
@@ -201,7 +201,7 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
             RequestTemplate::new(
                 0,
                 [field].iter().cloned().collect(),
-                HashSet::new(),
+                FnvHashSet::default(),
                 Predicate::comparison(ComparisonOperator::Eq, 0, 0),
             )
         })
@@ -209,7 +209,7 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
             // (num_fields..2*num_fields) Update user.
             RequestTemplate::new(
                 0,
-                HashSet::new(),
+                FnvHashSet::default(),
                 [field].iter().cloned().collect(),
                 Predicate::comparison(ComparisonOperator::Eq, 0, 0),
             )

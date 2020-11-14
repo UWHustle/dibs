@@ -1,7 +1,6 @@
 use crate::predicate::{ComparisonOperator, Connective, Predicate, Value};
-use fnv::FnvHashMap;
+use fnv::{FnvHashMap, FnvHashSet};
 use rand::Rng;
-use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, WaitTimeoutResult};
@@ -16,16 +15,16 @@ const FILTER_MAGNITUDE: usize = 1024;
 #[derive(Clone)]
 pub struct RequestTemplate {
     table: usize,
-    read_columns: HashSet<usize>,
-    write_columns: HashSet<usize>,
+    read_columns: FnvHashSet<usize>,
+    write_columns: FnvHashSet<usize>,
     predicate: Predicate,
 }
 
 impl RequestTemplate {
     pub fn new(
         table: usize,
-        read_columns: HashSet<usize>,
-        write_columns: HashSet<usize>,
+        read_columns: FnvHashSet<usize>,
+        write_columns: FnvHashSet<usize>,
         predicate: Predicate,
     ) -> RequestTemplate {
         RequestTemplate {
@@ -252,6 +251,7 @@ impl Dibs {
             request_variant,
             arguments,
         ));
+
         let request_id = self.request_count.fetch_add(1, Ordering::Relaxed);
 
         let mut conflicting_requests = vec![];
@@ -260,13 +260,8 @@ impl Dibs {
             RequestVariant::AdHoc(template) => {
                 let buckets = &self.inflight_requests[template.table];
                 for bucket in buckets {
-                    self.solve_ad_hoc(
-                        request_id,
-                        &request,
-                        template,
-                        bucket,
-                        &mut conflicting_requests,
-                    );
+                    conflicting_requests
+                        .extend(self.solve_ad_hoc(request_id, &request, template, bucket));
                 }
 
                 buckets.clone()
@@ -285,26 +280,20 @@ impl Dibs {
 
                         let bucket = &buckets[bucket_index];
 
-                        self.solve_prepared(
-                            request_id,
-                            &request,
-                            prepared_id,
-                            bucket,
-                            &mut conflicting_requests,
-                        );
+                        conflicting_requests =
+                            self.solve_prepared(request_id, &request, prepared_id, bucket);
 
                         vec![Arc::clone(bucket)]
                     }
 
                     None => {
                         for bucket in buckets {
-                            self.solve_prepared(
+                            conflicting_requests.extend(self.solve_prepared(
                                 request_id,
                                 &request,
                                 prepared_id,
                                 bucket,
-                                &mut conflicting_requests,
-                            );
+                            ));
                         }
 
                         buckets.clone()
@@ -339,44 +328,43 @@ impl Dibs {
         request: &Arc<Request>,
         template: &RequestTemplate,
         bucket: &RequestBucket,
-        conflicting_requests: &mut Vec<Arc<Request>>,
-    ) {
-        let mut bucket_guard = bucket.lock().unwrap();
+    ) -> Vec<Arc<Request>> {
+        let mut other_requests = vec![];
 
-        for other_request in bucket_guard.values() {
-            if other_request.transaction_id != request.transaction_id {
+        {
+            let mut bucket_guard = bucket.lock().unwrap();
+            other_requests.extend(bucket_guard.values().cloned());
+            bucket_guard.insert(request_id, Arc::clone(request));
+        }
+
+        other_requests.retain(|other_request| {
+            other_request.transaction_id != request.transaction_id && {
                 let other_template = match &other_request.variant {
                     RequestVariant::AdHoc(t) => t,
                     &RequestVariant::Prepared(id) => &self.prepared_requests[id].template,
                 };
 
-                if potential_conflict(template, other_template) {
-                    if self.optimization == OptimizationLevel::Ungrouped {
-                        if solver::solve_dnf(
+                potential_conflict(template, other_template)
+                    && match self.optimization {
+                        OptimizationLevel::Ungrouped => solver::solve_dnf(
                             &template.predicate,
                             &request.arguments,
                             &other_template.predicate,
                             &other_request.arguments,
                             self.blowup_limit,
-                        ) {
-                            conflicting_requests.push(Arc::clone(other_request));
-                        }
-                    } else {
-                        if solver::solve_clustered(
+                        ),
+                        _ => solver::solve_clustered(
                             &template.predicate,
                             &request.arguments,
                             &other_template.predicate,
                             &other_request.arguments,
                             self.blowup_limit,
-                        ) {
-                            conflicting_requests.push(Arc::clone(other_request));
-                        }
+                        ),
                     }
-                }
             }
-        }
+        });
 
-        bucket_guard.insert(request_id, Arc::clone(request));
+        other_requests
     }
 
     fn solve_prepared(
@@ -385,15 +373,20 @@ impl Dibs {
         request: &Arc<Request>,
         prepared_id: usize,
         bucket: &RequestBucket,
-        conflicting_requests: &mut Vec<Arc<Request>>,
-    ) {
-        let mut bucket_guard = bucket.lock().unwrap();
+    ) -> Vec<Arc<Request>> {
+        let mut other_requests = vec![];
 
-        for other_request in bucket_guard.values() {
-            if other_request.transaction_id != request.transaction_id {
-                match &other_request.variant {
+        {
+            let mut bucket_guard = bucket.lock().unwrap();
+            other_requests.extend(bucket_guard.values().cloned());
+            bucket_guard.insert(request_id, Arc::clone(request));
+        };
+
+        other_requests.retain(|other_request| {
+            other_request.transaction_id != request.transaction_id
+                && match &other_request.variant {
                     RequestVariant::AdHoc(other_template) => {
-                        if potential_conflict(
+                        potential_conflict(
                             &self.prepared_requests[prepared_id].template,
                             other_template,
                         ) && solver::solve_clustered(
@@ -402,57 +395,21 @@ impl Dibs {
                             &other_template.predicate,
                             &other_request.arguments,
                             self.blowup_limit,
-                        ) {
-                            conflicting_requests.push(Arc::clone(other_request));
-                        }
+                        )
                     }
-
                     &RequestVariant::Prepared(other_prepared_id) => {
-                        if let Some(conflict) =
-                            &self.prepared_requests[prepared_id].conflicts[other_prepared_id]
-                        {
-                            if solver::evaluate(
+                        match &self.prepared_requests[prepared_id].conflicts[other_prepared_id] {
+                            Some(conflict) => solver::evaluate(
                                 conflict,
                                 &request.arguments,
                                 &other_request.arguments,
-                            ) {
-                                conflicting_requests.push(Arc::clone(other_request));
-                            }
+                            ),
+                            None => false,
                         }
                     }
                 }
-            }
-        }
+        });
 
-        bucket_guard.insert(request_id, Arc::clone(request));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::predicate::{ComparisonOperator, Predicate, Value};
-    use crate::solver;
-
-    #[test]
-    fn it_works() {
-        let p = Predicate::conjunction(vec![
-            Predicate::comparison(ComparisonOperator::Eq, 0, 0),
-            Predicate::comparison(ComparisonOperator::Eq, 1, 1),
-        ]);
-
-        let _p_args = &[Value::Integer(0), Value::Integer(1)];
-
-        let q = Predicate::disjunction(vec![
-            Predicate::comparison(ComparisonOperator::Eq, 0, 2),
-            Predicate::comparison(ComparisonOperator::Eq, 1, 3),
-        ]);
-
-        let _q_args = &[Value::Integer(0), Value::Integer(1)];
-
-        println!("Predicate P:\n{}\n", p);
-
-        println!("Predicate Q:\n{}\n", q);
-
-        println!("{}", solver::prepare(&p, &q));
+        other_requests
     }
 }

@@ -1,9 +1,9 @@
 use crate::{Generator, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
 use dibs::{AcquireError, Dibs, OptimizationLevel, RequestGuard, RequestTemplate};
+use fnv::FnvHashSet;
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
-use std::collections::HashSet;
 use std::time::Duration;
 
 pub trait ScanConnection {
@@ -174,7 +174,12 @@ pub fn dibs(num_conjuncts: usize, optimization: OptimizationLevel, blowup_limit:
 
     let templates = vec![
         // (0) Get subscriber data scan.
-        RequestTemplate::new(0, (0..33).collect(), HashSet::new(), scan_predicate.clone()),
+        RequestTemplate::new(
+            0,
+            (0..33).collect(),
+            FnvHashSet::default(),
+            scan_predicate.clone(),
+        ),
         // (1) Update subscriber location scan.
         RequestTemplate::new(
             0,
