@@ -85,7 +85,7 @@ struct PreparedRequest {
     conflicts: Vec<Option<Predicate>>,
 }
 
-type RequestBucket = Arc<Mutex<FnvHashMap<usize, Arc<Request>>>>;
+type RequestBucket = Arc<spin::Mutex<FnvHashMap<usize, Arc<Request>>>>;
 
 pub struct RequestGuard {
     id: usize,
@@ -97,7 +97,6 @@ impl Drop for RequestGuard {
         for bucket in &self.buckets {
             bucket
                 .lock()
-                .unwrap()
                 .remove(&self.id)
                 .expect(&format!("no request with id {}", self.id))
                 .complete();
@@ -216,7 +215,7 @@ impl Dibs {
                 };
 
                 (0..num_partitions)
-                    .map(|_| Arc::new(Mutex::new(FnvHashMap::default())))
+                    .map(|_| Arc::new(spin::Mutex::new(FnvHashMap::default())))
                     .collect()
             })
             .collect();
@@ -332,7 +331,7 @@ impl Dibs {
         let mut other_requests = vec![];
 
         {
-            let mut bucket_guard = bucket.lock().unwrap();
+            let mut bucket_guard = bucket.lock();
             other_requests.extend(bucket_guard.values().cloned());
             bucket_guard.insert(request_id, Arc::clone(request));
         }
@@ -377,7 +376,7 @@ impl Dibs {
         let mut other_requests = vec![];
 
         {
-            let mut bucket_guard = bucket.lock().unwrap();
+            let mut bucket_guard = bucket.lock();
             other_requests.extend(bucket_guard.values().cloned());
             bucket_guard.insert(request_id, Arc::clone(request));
         };
