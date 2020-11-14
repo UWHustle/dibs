@@ -25,11 +25,11 @@ impl SharedState {
     }
 
     pub fn get_commit_count(&self) -> usize {
-        self.commit_counter.load(Ordering::Acquire)
+        self.commit_counter.load(Ordering::Relaxed)
     }
 
     pub fn terminate(&self) {
-        self.terminate_flag.store(true, Ordering::Release);
+        self.terminate_flag.store(true, Ordering::Relaxed);
     }
 
     fn group_id(&self) -> usize {
@@ -45,7 +45,7 @@ impl SharedState {
     }
 
     fn is_terminated(&self) -> bool {
-        self.terminate_flag.load(Ordering::Acquire)
+        self.terminate_flag.load(Ordering::Relaxed)
     }
 }
 
@@ -158,6 +158,8 @@ where
     C: Connection,
 {
     fn run(&mut self) {
+        let mut guards = vec![];
+
         while !self.shared_state.is_terminated() {
             let transaction_id = self.shared_state.transaction_id();
 
@@ -166,15 +168,17 @@ where
             self.connection.begin();
 
             loop {
-                if procedure
-                    .execute(
-                        transaction_id,
-                        transaction_id,
-                        &self.shared_state.dibs,
-                        &mut self.connection,
-                    )
-                    .is_ok()
-                {
+                let result = procedure.execute(
+                    transaction_id,
+                    transaction_id,
+                    &self.shared_state.dibs,
+                    &mut self.connection,
+                    &mut guards,
+                );
+
+                guards.clear();
+
+                if result.is_ok() {
                     break;
                 }
             }
@@ -220,7 +224,7 @@ where
     fn run(&mut self) {
         while !self.shared_state.is_terminated() {
             let group_id = self.shared_state.group_id();
-            let mut group_guards = vec![];
+            let mut guards = vec![];
             let mut i = 0;
 
             self.connection.begin();
@@ -237,16 +241,16 @@ where
                     transaction_id,
                     &self.shared_state.dibs,
                     &mut self.connection,
+                    &mut guards,
                 ) {
-                    Ok(mut guards) => {
-                        group_guards.append(&mut guards);
+                    Ok(_) => {
                         i += 1;
                     }
                     Err(_) => {
                         self.connection.rollback();
                         self.connection.commit();
 
-                        group_guards.clear();
+                        guards.clear();
 
                         self.shared_state.increment_commit_count(i);
                         i = 0;
@@ -256,6 +260,8 @@ where
                     }
                 }
             }
+
+            guards.clear();
 
             self.connection.commit();
 

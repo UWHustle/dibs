@@ -81,28 +81,35 @@ impl<C: ScanConnection> Procedure<C> for ScanProcedure {
         transaction_id: usize,
         dibs: &Dibs,
         connection: &mut C,
-    ) -> Result<Vec<RequestGuard>, AcquireError> {
+        guards: &mut Vec<RequestGuard>,
+    ) -> Result<(), AcquireError> {
         match self {
             ScanProcedure::GetSubscriberDataScan { byte2 } => {
-                let guard =
-                    dibs.acquire(group_id, transaction_id, 0, byte2_to_arguments(&byte2))?;
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    0,
+                    byte2_to_arguments(&byte2),
+                )?);
 
                 connection.get_subscriber_data_scan(*byte2);
-
-                Ok(vec![guard])
             }
             ScanProcedure::UpdateSubscriberLocationScan {
                 vlr_location,
                 byte2,
             } => {
-                let guard =
-                    dibs.acquire(group_id, transaction_id, 1, byte2_to_arguments(&byte2))?;
+                guards.push(dibs.acquire(
+                    group_id,
+                    transaction_id,
+                    1,
+                    byte2_to_arguments(&byte2),
+                )?);
 
                 connection.update_subscriber_location_scan(*vlr_location, *byte2);
-
-                Ok(vec![guard])
             }
         }
+
+        Ok(())
     }
 }
 

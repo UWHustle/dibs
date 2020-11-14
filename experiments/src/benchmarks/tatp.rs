@@ -154,9 +154,8 @@ impl<C: TATPConnection> Procedure<C> for TATPProcedure {
         transaction_id: usize,
         dibs: &Dibs,
         connection: &mut C,
-    ) -> Result<Vec<RequestGuard>, AcquireError> {
-        let mut guards = vec![];
-
+        guards: &mut Vec<RequestGuard>,
+    ) -> Result<(), AcquireError> {
         match self {
             TATPProcedure::GetSubscriberData { s_id } => {
                 guards.push(dibs.acquire(
@@ -298,7 +297,7 @@ impl<C: TATPConnection> Procedure<C> for TATPProcedure {
             }
         }
 
-        Ok(guards)
+        Ok(())
     }
 }
 

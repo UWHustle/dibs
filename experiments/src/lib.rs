@@ -13,7 +13,8 @@ pub trait Procedure<C> {
         transaction_id: usize,
         dibs: &Dibs,
         connection: &mut C,
-    ) -> Result<Vec<RequestGuard>, AcquireError>;
+        guards: &mut Vec<RequestGuard>,
+    ) -> Result<(), AcquireError>;
 }
 
 pub trait Generator {

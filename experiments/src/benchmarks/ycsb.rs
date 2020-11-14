@@ -62,9 +62,8 @@ impl<C: YCSBConnection> Procedure<C> for YCSBProcedure {
         transaction_id: usize,
         dibs: &Dibs,
         connection: &mut C,
-    ) -> Result<Vec<RequestGuard>, AcquireError> {
-        let mut guards = vec![];
-
+        guards: &mut Vec<RequestGuard>,
+    ) -> Result<(), AcquireError> {
         for statement in &self.statements {
             match statement {
                 YCSBStatement::SelectUser { field, user_id } => {
@@ -94,7 +93,7 @@ impl<C: YCSBConnection> Procedure<C> for YCSBProcedure {
             }
         }
 
-        Ok(guards)
+        Ok(())
     }
 }
 
