@@ -3,7 +3,9 @@ use dibs::{Dibs, OptimizationLevel};
 use dibs_experiments::benchmarks::ycsb;
 use dibs_experiments::benchmarks::ycsb::YCSBGenerator;
 use dibs_experiments::systems::sqlite::SQLiteYCSBConnection;
-use dibs_experiments::worker::{GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, Worker};
+use dibs_experiments::worker::{
+    GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, StandardWorker, Worker,
+};
 use dibs_experiments::{runner, systems};
 use rand::distributions::Distribution;
 use std::str::FromStr;
@@ -33,12 +35,11 @@ where
         let generator: ReadOnlyGenerator<YCSBGenerator<D>, SQLiteYCSBConnection> =
             ReadOnlyGenerator::new(make_generator(), sender.clone());
 
-        workers.push(Box::new(GroupCommitWorker::new(
+        workers.push(Box::new(StandardWorker::new(
             worker_id,
             None,
             generator,
             SQLiteYCSBConnection::new("ycsb.sqlite"),
-            num_transactions_per_group,
         )));
     }
 

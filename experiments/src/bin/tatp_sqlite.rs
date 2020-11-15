@@ -3,7 +3,9 @@ use dibs::OptimizationLevel;
 use dibs_experiments::benchmarks::tatp;
 use dibs_experiments::benchmarks::tatp::TATPGenerator;
 use dibs_experiments::systems::sqlite::SQLiteTATPConnection;
-use dibs_experiments::worker::{GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, Worker};
+use dibs_experiments::worker::{
+    GroupCommitWorker, ReadOnlyGenerator, ReceivingGenerator, StandardWorker, Worker,
+};
 use dibs_experiments::{runner, systems};
 use std::str::FromStr;
 use std::sync::{mpsc, Arc};
@@ -45,12 +47,11 @@ fn main() {
         let generator: ReadOnlyGenerator<TATPGenerator, SQLiteTATPConnection> =
             ReadOnlyGenerator::new(TATPGenerator::new(num_rows), sender.clone());
 
-        workers.push(Box::new(GroupCommitWorker::new(
+        workers.push(Box::new(StandardWorker::new(
             worker_id,
             None,
             generator,
             SQLiteTATPConnection::new("tatp.sqlite"),
-            num_transactions_per_group,
         )))
     }
 
