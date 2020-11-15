@@ -8,6 +8,7 @@ use arrow::array::{
     PrimitiveArrayOps, UInt32Array, UInt32Builder, UInt8Array, UInt8Builder,
 };
 use fnv::FnvHashMap;
+use rand::distributions::Alphanumeric;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use std::collections::hash_map::Entry;
@@ -636,7 +637,12 @@ impl ArrowYCSBDatabase {
 
             for field_builder in &mut field_builders {
                 field_builder
-                    .append_value(&(0..field_size).map(|_| rng.gen()).collect::<Vec<_>>())
+                    .append_value(
+                        rng.sample_iter(&Alphanumeric)
+                            .take(field_size)
+                            .collect::<String>()
+                            .as_bytes(),
+                    )
                     .unwrap();
             }
 
