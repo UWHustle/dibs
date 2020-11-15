@@ -35,7 +35,7 @@ fn main() {
 
     let mut workers: Vec<Box<dyn Worker + Send>> = vec![Box::new(GroupCommitWorker::new(
         0,
-        Arc::clone(&dibs),
+        Some(dibs),
         ReceivingGenerator::new(TATPGenerator::new(num_rows), receiver),
         SQLiteTATPConnection::new("tatp.sqlite"),
         num_transactions_per_group,
@@ -47,7 +47,7 @@ fn main() {
 
         workers.push(Box::new(GroupCommitWorker::new(
             worker_id,
-            Arc::clone(&dibs),
+            None,
             generator,
             SQLiteTATPConnection::new("tatp.sqlite"),
             num_transactions_per_group,

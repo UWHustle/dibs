@@ -4,6 +4,7 @@ use dibs::{AcquireError, Dibs, OptimizationLevel, RequestTemplate, Transaction};
 use fnv::FnvHashSet;
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub trait TATPConnection {
@@ -150,13 +151,15 @@ impl<C: TATPConnection> Procedure<C> for TATPProcedure {
 
     fn execute(
         &self,
-        dibs: &Dibs,
+        dibs: &Option<Arc<Dibs>>,
         transaction: &mut Transaction,
         connection: &mut C,
     ) -> Result<(), AcquireError> {
         match self {
             TATPProcedure::GetSubscriberData { s_id } => {
-                dibs.acquire(transaction, 0, vec![Value::Integer(*s_id as usize)])?;
+                if let Some(d) = dibs {
+                    d.acquire(transaction, 0, vec![Value::Integer(*s_id as usize)])?;
+                }
 
                 connection.get_subscriber_data(*s_id);
             }
@@ -167,38 +170,42 @@ impl<C: TATPConnection> Procedure<C> for TATPProcedure {
                 start_time,
                 end_time,
             } => {
-                dibs.acquire(
-                    transaction,
-                    1,
-                    vec![
-                        Value::Integer(*s_id as usize),
-                        Value::Integer(*sf_type as usize),
-                    ],
-                )?;
+                if let Some(d) = dibs {
+                    d.acquire(
+                        transaction,
+                        1,
+                        vec![
+                            Value::Integer(*s_id as usize),
+                            Value::Integer(*sf_type as usize),
+                        ],
+                    )?;
 
-                dibs.acquire(
-                    transaction,
-                    2,
-                    vec![
-                        Value::Integer(*s_id as usize),
-                        Value::Integer(*sf_type as usize),
-                        Value::Integer(*start_time as usize),
-                        Value::Integer(*end_time as usize),
-                    ],
-                )?;
+                    d.acquire(
+                        transaction,
+                        2,
+                        vec![
+                            Value::Integer(*s_id as usize),
+                            Value::Integer(*sf_type as usize),
+                            Value::Integer(*start_time as usize),
+                            Value::Integer(*end_time as usize),
+                        ],
+                    )?;
+                }
 
                 connection.get_new_destination(*s_id, *sf_type, *start_time, *end_time);
             }
 
             TATPProcedure::GetAccessData { s_id, ai_type } => {
-                dibs.acquire(
-                    transaction,
-                    3,
-                    vec![
-                        Value::Integer(*s_id as usize),
-                        Value::Integer(*ai_type as usize),
-                    ],
-                )?;
+                if let Some(d) = dibs {
+                    d.acquire(
+                        transaction,
+                        3,
+                        vec![
+                            Value::Integer(*s_id as usize),
+                            Value::Integer(*ai_type as usize),
+                        ],
+                    )?;
+                }
 
                 connection.get_access_data(*s_id, *ai_type);
             }
@@ -209,22 +216,26 @@ impl<C: TATPConnection> Procedure<C> for TATPProcedure {
                 data_a,
                 sf_type,
             } => {
-                dibs.acquire(transaction, 4, vec![Value::Integer(*s_id as usize)])?;
+                if let Some(d) = dibs {
+                    d.acquire(transaction, 4, vec![Value::Integer(*s_id as usize)])?;
 
-                dibs.acquire(
-                    transaction,
-                    5,
-                    vec![
-                        Value::Integer(*s_id as usize),
-                        Value::Integer(*sf_type as usize),
-                    ],
-                )?;
+                    d.acquire(
+                        transaction,
+                        5,
+                        vec![
+                            Value::Integer(*s_id as usize),
+                            Value::Integer(*sf_type as usize),
+                        ],
+                    )?;
+                }
 
                 connection.update_subscriber_bit(*bit_1, *s_id);
                 connection.update_special_facility_data(*data_a, *s_id, *sf_type);
             }
             TATPProcedure::UpdateLocation { vlr_location, s_id } => {
-                dibs.acquire(transaction, 6, vec![Value::Integer(*s_id as usize)])?;
+                if let Some(d) = dibs {
+                    d.acquire(transaction, 6, vec![Value::Integer(*s_id as usize)])?;
+                }
 
                 connection.update_subscriber_location(*vlr_location, *s_id);
             }
@@ -235,17 +246,19 @@ impl<C: TATPConnection> Procedure<C> for TATPProcedure {
                 end_time,
                 numberx,
             } => {
-                dibs.acquire(transaction, 7, vec![Value::Integer(*s_id as usize)])?;
+                if let Some(d) = dibs {
+                    d.acquire(transaction, 7, vec![Value::Integer(*s_id as usize)])?;
 
-                dibs.acquire(
-                    transaction,
-                    8,
-                    vec![
-                        Value::Integer(*s_id as usize),
-                        Value::Integer(*sf_type as usize),
-                        Value::Integer(*start_time as usize),
-                    ],
-                )?;
+                    d.acquire(
+                        transaction,
+                        8,
+                        vec![
+                            Value::Integer(*s_id as usize),
+                            Value::Integer(*sf_type as usize),
+                            Value::Integer(*start_time as usize),
+                        ],
+                    )?;
+                }
 
                 connection.get_special_facility_types(*s_id);
                 connection.insert_call_forwarding(*s_id, *sf_type, *start_time, *end_time, numberx);
@@ -255,15 +268,17 @@ impl<C: TATPConnection> Procedure<C> for TATPProcedure {
                 sf_type,
                 start_time,
             } => {
-                dibs.acquire(
-                    transaction,
-                    8,
-                    vec![
-                        Value::Integer(*s_id as usize),
-                        Value::Integer(*sf_type as usize),
-                        Value::Integer(*start_time as usize),
-                    ],
-                )?;
+                if let Some(d) = dibs {
+                    d.acquire(
+                        transaction,
+                        8,
+                        vec![
+                            Value::Integer(*s_id as usize),
+                            Value::Integer(*sf_type as usize),
+                            Value::Integer(*start_time as usize),
+                        ],
+                    )?;
+                }
 
                 connection.delete_call_forwarding(*s_id, *sf_type, *start_time);
             }

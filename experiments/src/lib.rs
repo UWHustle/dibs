@@ -1,4 +1,5 @@
 use dibs::{AcquireError, Dibs, OptimizationLevel, Transaction};
+use std::sync::Arc;
 
 pub mod benchmarks;
 pub mod runner;
@@ -9,7 +10,7 @@ pub trait Procedure<C> {
     fn is_read_only(&self) -> bool;
     fn execute(
         &self,
-        dibs: &Dibs,
+        dibs: &Option<Arc<Dibs>>,
         transaction: &mut Transaction,
         connection: &mut C,
     ) -> Result<(), AcquireError>;

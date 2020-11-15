@@ -42,7 +42,7 @@ fn main() {
     for worker_id in 0..num_workers {
         workers.push(Box::new(StandardWorker::new(
             worker_id,
-            Arc::clone(&dibs),
+            Some(Arc::clone(&dibs)),
             ScanGenerator::new(select_mix, range),
             ArrowScanConnection::new(Arc::clone(&db)),
         )))

@@ -42,7 +42,7 @@ fn main() {
         if skew == 0.0 {
             workers.push(Box::new(StandardWorker::new(
                 worker_id,
-                Arc::clone(&dibs),
+                Some(Arc::clone(&dibs)),
                 ycsb::uniform_generator(
                     num_rows,
                     field_size,
@@ -54,7 +54,7 @@ fn main() {
         } else {
             workers.push(Box::new(StandardWorker::new(
                 worker_id,
-                Arc::clone(&dibs),
+                Some(Arc::clone(&dibs)),
                 ycsb::zipf_generator(
                     num_rows,
                     field_size,

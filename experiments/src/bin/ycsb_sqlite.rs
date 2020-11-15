@@ -12,7 +12,7 @@ use std::sync::{mpsc, Arc};
 fn make_workers<F, D>(
     num_transactions_per_group: usize,
     num_workers: usize,
-    dibs: &Arc<Dibs>,
+    dibs: Arc<Dibs>,
     make_generator: F,
 ) -> Vec<Box<dyn Worker + Send>>
 where
@@ -23,7 +23,7 @@ where
 
     let mut workers: Vec<Box<dyn Worker + Send>> = vec![Box::new(GroupCommitWorker::new(
         0,
-        Arc::clone(dibs),
+        Some(dibs),
         ReceivingGenerator::new(make_generator(), receiver),
         SQLiteYCSBConnection::new("ycsb.sqlite"),
         num_transactions_per_group,
@@ -35,7 +35,7 @@ where
 
         workers.push(Box::new(GroupCommitWorker::new(
             worker_id,
-            Arc::clone(&dibs),
+            None,
             generator,
             SQLiteYCSBConnection::new("ycsb.sqlite"),
             num_transactions_per_group,
@@ -78,7 +78,7 @@ fn main() {
     systems::sqlite::load_ycsb("ycsb.sqlite", num_rows, field_size);
 
     let workers = if skew == 0.0 {
-        make_workers(num_transactions_per_group, num_workers, &dibs, || {
+        make_workers(num_transactions_per_group, num_workers, dibs, || {
             ycsb::uniform_generator(
                 num_rows,
                 field_size,
@@ -87,7 +87,7 @@ fn main() {
             )
         })
     } else {
-        make_workers(num_transactions_per_group, num_workers, &dibs, || {
+        make_workers(num_transactions_per_group, num_workers, dibs, || {
             ycsb::zipf_generator(
                 num_rows,
                 field_size,

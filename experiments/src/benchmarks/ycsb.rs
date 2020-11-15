@@ -4,6 +4,7 @@ use dibs::{AcquireError, Dibs, RequestTemplate, Transaction};
 use fnv::FnvHashSet;
 use rand::distributions::Alphanumeric;
 use rand::{distributions, thread_rng, Rng};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub const NUM_FIELDS: usize = 10;
@@ -58,14 +59,16 @@ impl<C: YCSBConnection> Procedure<C> for YCSBProcedure {
 
     fn execute(
         &self,
-        dibs: &Dibs,
+        dibs: &Option<Arc<Dibs>>,
         transaction: &mut Transaction,
         connection: &mut C,
     ) -> Result<(), AcquireError> {
         for statement in &self.statements {
             match statement {
                 YCSBStatement::SelectUser { field, user_id } => {
-                    dibs.acquire(transaction, *field, vec![Value::Integer(*user_id as usize)])?;
+                    if let Some(d) = dibs {
+                        d.acquire(transaction, *field, vec![Value::Integer(*user_id as usize)])?;
+                    }
 
                     connection.select_user(*field, *user_id);
                 }
@@ -74,11 +77,13 @@ impl<C: YCSBConnection> Procedure<C> for YCSBProcedure {
                     data,
                     user_id,
                 } => {
-                    dibs.acquire(
-                        transaction,
-                        NUM_FIELDS + *field,
-                        vec![Value::Integer(*user_id as usize)],
-                    )?;
+                    if let Some(d) = dibs {
+                        d.acquire(
+                            transaction,
+                            NUM_FIELDS + *field,
+                            vec![Value::Integer(*user_id as usize)],
+                        )?;
+                    }
 
                     connection.update_user(*field, data, *user_id);
                 }

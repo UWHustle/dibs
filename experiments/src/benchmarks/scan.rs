@@ -4,6 +4,7 @@ use dibs::{AcquireError, Dibs, OptimizationLevel, RequestTemplate, Transaction};
 use fnv::FnvHashSet;
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub trait ScanConnection {
@@ -77,13 +78,15 @@ impl<C: ScanConnection> Procedure<C> for ScanProcedure {
 
     fn execute(
         &self,
-        dibs: &Dibs,
+        dibs: &Option<Arc<Dibs>>,
         transaction: &mut Transaction,
         connection: &mut C,
     ) -> Result<(), AcquireError> {
         match self {
             ScanProcedure::GetSubscriberDataScan { byte2 } => {
-                dibs.acquire(transaction, 0, byte2_to_arguments(&byte2))?;
+                if let Some(d) = dibs {
+                    d.acquire(transaction, 0, byte2_to_arguments(&byte2))?;
+                }
 
                 connection.get_subscriber_data_scan(*byte2);
             }
@@ -91,7 +94,9 @@ impl<C: ScanConnection> Procedure<C> for ScanProcedure {
                 vlr_location,
                 byte2,
             } => {
-                dibs.acquire(transaction, 1, byte2_to_arguments(&byte2))?;
+                if let Some(d) = dibs {
+                    d.acquire(transaction, 1, byte2_to_arguments(&byte2))?;
+                }
 
                 connection.update_subscriber_location_scan(*vlr_location, *byte2);
             }

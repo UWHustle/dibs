@@ -2,19 +2,19 @@ use crate::{Connection, Generator, Procedure};
 use dibs::{Dibs, Transaction};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
 
 struct State {
     group_counter: usize,
     transaction_counter: usize,
-    dibs: Arc<Dibs>,
+    dibs: Option<Arc<Dibs>>,
 }
 
 impl State {
-    fn new(worker_id: usize, dibs: Arc<Dibs>) -> State {
+    fn new(worker_id: usize, dibs: Option<Arc<Dibs>>) -> State {
         assert!(worker_id < 1024);
-        let counter = worker_id * usize::max_value() / 1024;
+        let counter = worker_id * (usize::max_value() / 1024);
 
         State {
             group_counter: counter,
@@ -75,9 +75,7 @@ where
                 break procedure;
             }
 
-            self.sender
-                .send(procedure)
-                .expect("cannot send procedure (channel closed)");
+            let _r = self.sender.send(procedure);
         }
     }
 }
@@ -108,10 +106,7 @@ where
     fn next(&self) -> G::Item {
         match self.receiver.try_recv() {
             Ok(procedure) => procedure,
-            Err(e) => match e {
-                TryRecvError::Empty => self.inner.next(),
-                TryRecvError::Disconnected => panic!("cannot receive procedure (channel closed)"),
-            },
+            Err(_) => self.inner.next(),
         }
     }
 }
@@ -129,7 +124,7 @@ pub struct StandardWorker<G, C> {
 impl<G, C> StandardWorker<G, C> {
     pub fn new(
         worker_id: usize,
-        dibs: Arc<Dibs>,
+        dibs: Option<Arc<Dibs>>,
         generator: G,
         connection: C,
     ) -> StandardWorker<G, C> {
@@ -186,7 +181,7 @@ pub struct GroupCommitWorker<G, C> {
 impl<G, C> GroupCommitWorker<G, C> {
     pub fn new(
         worker_id: usize,
-        dibs: Arc<Dibs>,
+        dibs: Option<Arc<Dibs>>,
         generator: G,
         connection: C,
         num_transactions_per_group: usize,

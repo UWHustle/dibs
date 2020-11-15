@@ -33,7 +33,7 @@ fn main() {
     for worker_id in 0..num_workers {
         workers.push(Box::new(StandardWorker::new(
             worker_id,
-            Arc::clone(&dibs),
+            Some(Arc::clone(&dibs)),
             TATPGenerator::new(num_rows),
             ArrowTATPConnection::new(Arc::clone(&db)),
         )));
