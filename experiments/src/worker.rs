@@ -1,5 +1,5 @@
 use crate::{Connection, Generator, Procedure};
-use dibs::Dibs;
+use dibs::{Dibs, Transaction};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 struct State {
     group_counter: usize,
-    begin_counter: usize,
+    transaction_counter: usize,
     dibs: Arc<Dibs>,
 }
 
@@ -18,7 +18,7 @@ impl State {
 
         State {
             group_counter: counter,
-            begin_counter: counter,
+            transaction_counter: counter,
             dibs,
         }
     }
@@ -28,7 +28,7 @@ impl State {
     }
 
     fn transaction_id(&mut self) -> usize {
-        State::fetch_inc(&mut self.begin_counter)
+        State::fetch_inc(&mut self.transaction_counter)
     }
 
     fn fetch_inc(x: &mut usize) -> usize {
@@ -148,26 +148,17 @@ where
     C: Connection,
 {
     fn run(&mut self, commits: Arc<AtomicUsize>, terminate: Arc<AtomicBool>) {
-        let mut guards = vec![];
-
         while !terminate.load(Ordering::Relaxed) {
-            let group_id = self.state.group_id();
-            let transaction_id = self.state.transaction_id();
+            let mut transaction =
+                Transaction::new(self.state.group_id(), self.state.transaction_id());
 
             let procedure = self.generator.next();
 
             self.connection.begin();
 
             loop {
-                let result = procedure.execute(
-                    group_id,
-                    transaction_id,
-                    &self.state.dibs,
-                    &mut self.connection,
-                    &mut guards,
-                );
-
-                guards.clear();
+                let result =
+                    procedure.execute(&self.state.dibs, &mut transaction, &mut self.connection);
 
                 if result.is_ok() {
                     break;
@@ -175,6 +166,8 @@ where
             }
 
             self.connection.commit();
+
+            transaction.commit();
 
             commits.fetch_add(1, Ordering::Relaxed);
         }
@@ -215,25 +208,24 @@ where
 {
     fn run(&mut self, commits: Arc<AtomicUsize>, terminate: Arc<AtomicBool>) {
         while !terminate.load(Ordering::Relaxed) {
+            let mut transactions = vec![];
+
             let group_id = self.state.group_id();
-            let mut guards = vec![];
             let mut i = 0;
 
             self.connection.begin();
 
             while i < self.num_transactions_per_group {
-                let transaction_id = self.state.transaction_id();
+                transactions.push(Transaction::new(group_id, self.state.transaction_id()));
 
                 let procedure = self.generator.next();
 
                 self.connection.savepoint();
 
                 match procedure.execute(
-                    group_id,
-                    transaction_id,
                     &self.state.dibs,
+                    transactions.last_mut().unwrap(),
                     &mut self.connection,
-                    &mut guards,
                 ) {
                     Ok(_) => {
                         i += 1;
@@ -242,7 +234,9 @@ where
                         self.connection.rollback();
                         self.connection.commit();
 
-                        guards.clear();
+                        for transaction in transactions.drain(..) {
+                            transaction.commit();
+                        }
 
                         commits.fetch_add(i, Ordering::Relaxed);
                         i = 0;
@@ -253,9 +247,11 @@ where
                 }
             }
 
-            guards.clear();
-
             self.connection.commit();
+
+            for transaction in transactions.drain(..) {
+                transaction.commit();
+            }
 
             commits.fetch_add(i, Ordering::Relaxed);
         }

@@ -1,4 +1,4 @@
-use dibs::{AcquireError, Dibs, OptimizationLevel, RequestGuard};
+use dibs::{AcquireError, Dibs, OptimizationLevel, Transaction};
 
 pub mod benchmarks;
 pub mod runner;
@@ -9,11 +9,9 @@ pub trait Procedure<C> {
     fn is_read_only(&self) -> bool;
     fn execute(
         &self,
-        group_id: usize,
-        transaction_id: usize,
         dibs: &Dibs,
+        transaction: &mut Transaction,
         connection: &mut C,
-        guards: &mut Vec<RequestGuard>,
     ) -> Result<(), AcquireError>;
 }
 

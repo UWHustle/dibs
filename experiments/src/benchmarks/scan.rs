@@ -1,6 +1,6 @@
 use crate::{Generator, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
-use dibs::{AcquireError, Dibs, OptimizationLevel, RequestGuard, RequestTemplate};
+use dibs::{AcquireError, Dibs, OptimizationLevel, RequestTemplate, Transaction};
 use fnv::FnvHashSet;
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
@@ -77,20 +77,13 @@ impl<C: ScanConnection> Procedure<C> for ScanProcedure {
 
     fn execute(
         &self,
-        group_id: usize,
-        transaction_id: usize,
         dibs: &Dibs,
+        transaction: &mut Transaction,
         connection: &mut C,
-        guards: &mut Vec<RequestGuard>,
     ) -> Result<(), AcquireError> {
         match self {
             ScanProcedure::GetSubscriberDataScan { byte2 } => {
-                guards.push(dibs.acquire(
-                    group_id,
-                    transaction_id,
-                    0,
-                    byte2_to_arguments(&byte2),
-                )?);
+                dibs.acquire(transaction, 0, byte2_to_arguments(&byte2))?;
 
                 connection.get_subscriber_data_scan(*byte2);
             }
@@ -98,12 +91,7 @@ impl<C: ScanConnection> Procedure<C> for ScanProcedure {
                 vlr_location,
                 byte2,
             } => {
-                guards.push(dibs.acquire(
-                    group_id,
-                    transaction_id,
-                    1,
-                    byte2_to_arguments(&byte2),
-                )?);
+                dibs.acquire(transaction, 1, byte2_to_arguments(&byte2))?;
 
                 connection.update_subscriber_location_scan(*vlr_location, *byte2);
             }

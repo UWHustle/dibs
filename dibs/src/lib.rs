@@ -1,8 +1,9 @@
+#![feature(drain_filter)]
+
 use crate::predicate::{ComparisonOperator, Connective, Predicate, Value};
-use fnv::{FnvHashMap, FnvHashSet};
+use fnv::FnvHashSet;
 use rand::Rng;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, WaitTimeoutResult};
 use std::time::Duration;
 
@@ -85,43 +86,7 @@ struct PreparedRequest {
     conflicts: Vec<Option<Predicate>>,
 }
 
-type RequestBucket = Arc<Mutex<FnvHashMap<usize, Arc<Request>>>>;
-
-pub enum RequestGuard {
-    Unfiltered {
-        id: usize,
-        buckets: Vec<RequestBucket>,
-    },
-    Filtered {
-        id: usize,
-        bucket: RequestBucket,
-    },
-}
-
-impl Drop for RequestGuard {
-    fn drop(&mut self) {
-        match self {
-            RequestGuard::Unfiltered { id, buckets } => {
-                for bucket in buckets {
-                    bucket
-                        .lock()
-                        .unwrap()
-                        .remove(id)
-                        .expect(&format!("no request with id {}", id))
-                        .complete();
-                }
-            }
-            RequestGuard::Filtered { id, bucket } => {
-                bucket
-                    .lock()
-                    .unwrap()
-                    .remove(id)
-                    .expect(&format!("no request with id {}", id))
-                    .complete();
-            }
-        }
-    }
-}
+type RequestBucket = Arc<Mutex<Vec<Arc<Request>>>>;
 
 fn potential_conflict(p: &RequestTemplate, q: &RequestTemplate) -> bool {
     p.table == q.table
@@ -199,13 +164,41 @@ impl FromStr for OptimizationLevel {
     }
 }
 
+pub struct Transaction {
+    group_id: usize,
+    transaction_id: usize,
+    buckets: Vec<RequestBucket>,
+}
+
+impl Transaction {
+    pub fn new(group_id: usize, transaction_id: usize) -> Transaction {
+        Transaction {
+            group_id,
+            transaction_id,
+            buckets: vec![],
+        }
+    }
+
+    pub fn commit(self) {
+        let transaction_id = self.transaction_id;
+        for bucket in self.buckets {
+            for request in bucket
+                .lock()
+                .unwrap()
+                .drain_filter(|request| request.transaction_id == transaction_id)
+            {
+                request.complete();
+            }
+        }
+    }
+}
+
 pub struct Dibs {
     prepared_requests: Vec<PreparedRequest>,
     inflight_requests: Vec<Vec<RequestBucket>>,
     optimization: OptimizationLevel,
     blowup_limit: usize,
     timeout: Duration,
-    request_count: AtomicUsize,
 }
 
 impl Dibs {
@@ -234,7 +227,7 @@ impl Dibs {
                 };
 
                 (0..num_partitions)
-                    .map(|_| Arc::new(Mutex::new(FnvHashMap::default())))
+                    .map(|_| Arc::new(Mutex::new(vec![])))
                     .collect()
             })
             .collect();
@@ -245,29 +238,24 @@ impl Dibs {
             optimization,
             blowup_limit,
             timeout,
-            request_count: AtomicUsize::new(0),
         }
     }
 
     pub fn acquire(
         &self,
-        group_id: usize,
-        transaction_id: usize,
+        transaction: &mut Transaction,
         template_id: usize,
         arguments: Vec<Value>,
-    ) -> Result<RequestGuard, AcquireError> {
-        let request_id = self.request_count.fetch_add(1, Ordering::Relaxed);
-
+    ) -> Result<(), AcquireError> {
         let mut conflicting_requests: Vec<Arc<Request>>;
-        let guard: RequestGuard;
 
         match self.optimization {
             OptimizationLevel::Ungrouped | OptimizationLevel::Grouped => {
                 let template = &self.prepared_requests[template_id].template;
 
                 let request = Arc::new(Request::new(
-                    group_id,
-                    transaction_id,
+                    transaction.group_id,
+                    transaction.transaction_id,
                     RequestVariant::AdHoc(template.clone()),
                     arguments,
                 ));
@@ -277,22 +265,18 @@ impl Dibs {
                 conflicting_requests = vec![];
 
                 for bucket in buckets {
-                    conflicting_requests
-                        .extend(self.solve_ad_hoc(request_id, &request, template, bucket));
+                    conflicting_requests.extend(self.solve_ad_hoc(&request, template, bucket));
                 }
 
-                guard = RequestGuard::Unfiltered {
-                    id: request_id,
-                    buckets: buckets.clone(),
-                };
+                transaction.buckets.extend(buckets.iter().cloned());
             }
 
             OptimizationLevel::Prepared | OptimizationLevel::Filtered => {
                 let prepared_request = &self.prepared_requests[template_id];
 
                 let request = Arc::new(Request::new(
-                    group_id,
-                    transaction_id,
+                    transaction.group_id,
+                    transaction.transaction_id,
                     RequestVariant::Prepared(template_id),
                     arguments,
                 ));
@@ -308,13 +292,9 @@ impl Dibs {
 
                         let bucket = &buckets[bucket_index];
 
-                        conflicting_requests =
-                            self.solve_prepared(request_id, &request, template_id, bucket);
+                        conflicting_requests = self.solve_prepared(&request, template_id, bucket);
 
-                        guard = RequestGuard::Filtered {
-                            id: request_id,
-                            bucket: Arc::clone(&bucket),
-                        }
+                        transaction.buckets.push(Arc::clone(&bucket));
                     }
 
                     None => {
@@ -322,17 +302,13 @@ impl Dibs {
 
                         for bucket in buckets {
                             conflicting_requests.extend(self.solve_prepared(
-                                request_id,
                                 &request,
                                 template_id,
                                 bucket,
                             ));
                         }
 
-                        guard = RequestGuard::Unfiltered {
-                            id: request_id,
-                            buckets: buckets.clone(),
-                        }
+                        transaction.buckets.extend(buckets.iter().cloned())
                     }
                 }
             }
@@ -341,7 +317,7 @@ impl Dibs {
         let timeout = self.timeout.mul_f32(rand::thread_rng().gen_range(0.8, 1.2));
 
         for conflicting_request in &conflicting_requests {
-            if conflicting_request.group_id == group_id {
+            if conflicting_request.group_id == transaction.group_id {
                 return Err(AcquireError::GroupConflict);
             }
 
@@ -350,12 +326,11 @@ impl Dibs {
             }
         }
 
-        Ok(guard)
+        Ok(())
     }
 
     fn solve_ad_hoc(
         &self,
-        request_id: usize,
         request: &Arc<Request>,
         template: &RequestTemplate,
         bucket: &RequestBucket,
@@ -364,8 +339,8 @@ impl Dibs {
 
         {
             let mut bucket_guard = bucket.lock().unwrap();
-            other_requests.extend(bucket_guard.values().cloned());
-            bucket_guard.insert(request_id, Arc::clone(request));
+            other_requests.extend(bucket_guard.iter().cloned());
+            bucket_guard.push(Arc::clone(request));
         }
 
         other_requests.retain(|other_request| {
@@ -400,7 +375,6 @@ impl Dibs {
 
     fn solve_prepared(
         &self,
-        request_id: usize,
         request: &Arc<Request>,
         prepared_id: usize,
         bucket: &RequestBucket,
@@ -409,8 +383,8 @@ impl Dibs {
 
         {
             let mut bucket_guard = bucket.lock().unwrap();
-            other_requests.extend(bucket_guard.values().cloned());
-            bucket_guard.insert(request_id, Arc::clone(request));
+            other_requests.extend(bucket_guard.iter().cloned());
+            bucket_guard.push(Arc::clone(request));
         };
 
         other_requests.retain(|other_request| {

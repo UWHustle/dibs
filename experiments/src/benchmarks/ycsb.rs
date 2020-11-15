@@ -1,6 +1,6 @@
 use crate::{Generator, OptimizationLevel, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
-use dibs::{AcquireError, Dibs, RequestGuard, RequestTemplate};
+use dibs::{AcquireError, Dibs, RequestTemplate, Transaction};
 use fnv::FnvHashSet;
 use rand::distributions::Alphanumeric;
 use rand::{distributions, thread_rng, Rng};
@@ -58,21 +58,14 @@ impl<C: YCSBConnection> Procedure<C> for YCSBProcedure {
 
     fn execute(
         &self,
-        group_id: usize,
-        transaction_id: usize,
         dibs: &Dibs,
+        transaction: &mut Transaction,
         connection: &mut C,
-        guards: &mut Vec<RequestGuard>,
     ) -> Result<(), AcquireError> {
         for statement in &self.statements {
             match statement {
                 YCSBStatement::SelectUser { field, user_id } => {
-                    guards.push(dibs.acquire(
-                        group_id,
-                        transaction_id,
-                        *field,
-                        vec![Value::Integer(*user_id as usize)],
-                    )?);
+                    dibs.acquire(transaction, *field, vec![Value::Integer(*user_id as usize)])?;
 
                     connection.select_user(*field, *user_id);
                 }
@@ -81,12 +74,11 @@ impl<C: YCSBConnection> Procedure<C> for YCSBProcedure {
                     data,
                     user_id,
                 } => {
-                    guards.push(dibs.acquire(
-                        group_id,
-                        transaction_id,
+                    dibs.acquire(
+                        transaction,
                         NUM_FIELDS + *field,
                         vec![Value::Integer(*user_id as usize)],
-                    )?);
+                    )?;
 
                     connection.update_user(*field, data, *user_id);
                 }
