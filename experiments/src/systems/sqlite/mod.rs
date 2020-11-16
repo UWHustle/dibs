@@ -63,8 +63,8 @@ impl Connection for SQLiteBaseStatements<'_> {
 }
 
 pub fn load_tatp<P>(path: P, num_rows: u32)
-    where
-        P: AsRef<Path>,
+where
+    P: AsRef<Path>,
 {
     let mut rng = rand::thread_rng();
 
@@ -96,7 +96,7 @@ pub fn load_tatp<P>(path: P, num_rows: u32)
                     msc_location INTEGER, vlr_location INTEGER);",
         params![],
     )
-        .unwrap();
+    .unwrap();
 
     conn.execute(
         "CREATE TABLE access_info (s_id INTEGER NOT NULL,
@@ -106,7 +106,7 @@ pub fn load_tatp<P>(path: P, num_rows: u32)
                 FOREIGN KEY (s_id) REFERENCES Subscriber (s_id));",
         params![],
     )
-        .unwrap();
+    .unwrap();
 
     conn.execute(
         "CREATE TABLE special_facility (s_id INTEGER NOT NULL,
@@ -117,7 +117,7 @@ pub fn load_tatp<P>(path: P, num_rows: u32)
                 FOREIGN KEY (s_id) REFERENCES Subscriber (s_id));",
         params![],
     )
-        .unwrap();
+    .unwrap();
 
     conn.execute(
         "CREATE TABLE call_forwarding (s_id INTEGER NOT NULL,
@@ -128,7 +128,7 @@ pub fn load_tatp<P>(path: P, num_rows: u32)
                 REFERENCES Special_Facility(s_id, sf_type));",
         params![],
     )
-        .unwrap();
+    .unwrap();
 
     let mut s_ids = (1..=num_rows).collect::<Vec<_>>();
     s_ids.shuffle(&mut rng);
@@ -151,7 +151,7 @@ pub fn load_tatp<P>(path: P, num_rows: u32)
         ),
         params![],
     )
-        .unwrap();
+    .unwrap();
 
     conn.execute(
         &format!(
@@ -178,7 +178,7 @@ pub fn load_tatp<P>(path: P, num_rows: u32)
         ),
         params![],
     )
-        .unwrap();
+    .unwrap();
 
     let sf_types = s_ids
         .iter()
@@ -210,7 +210,7 @@ pub fn load_tatp<P>(path: P, num_rows: u32)
         ),
         params![],
     )
-        .unwrap();
+    .unwrap();
 
     conn.execute(
         &format!(
@@ -236,7 +236,7 @@ pub fn load_tatp<P>(path: P, num_rows: u32)
         ),
         params![],
     )
-        .unwrap();
+    .unwrap();
 }
 
 pub struct SQLiteTATPConnection<'a> {
@@ -255,8 +255,8 @@ pub struct SQLiteTATPConnection<'a> {
 
 impl<'a> SQLiteTATPConnection<'a> {
     pub fn new<P>(path: P) -> SQLiteTATPConnection<'a>
-        where
-            P: AsRef<Path>,
+    where
+        P: AsRef<Path>,
     {
         let conn = Box::into_raw(Box::new(rusqlite::Connection::open(path).unwrap()));
 
@@ -505,9 +505,11 @@ impl TATPConnection for SQLiteTATPConnection<'_> {
 unsafe impl Send for SQLiteTATPConnection<'_> {}
 
 pub fn load_ycsb<P>(path: P, num_rows: u32, field_size: usize)
-    where
-        P: AsRef<Path>,
+where
+    P: AsRef<Path>,
 {
+    assert!(num_rows > 0);
+    assert_eq!(num_rows % 1000, 0);
     assert!(field_size > 0 && field_size <= i32::max_value() as usize);
 
     let mut rng = rand::thread_rng();
@@ -529,32 +531,36 @@ pub fn load_ycsb<P>(path: P, num_rows: u32, field_size: usize)
         ),
         params![],
     )
-        .unwrap();
+    .unwrap();
 
     let mut ids = (0..num_rows).collect::<Vec<_>>();
     ids.shuffle(&mut rng);
 
-    conn.execute(
-        &format!(
-            "INSERT INTO users VALUES {};",
-            ids.iter()
-                .map(|&id| format!(
-                    "({},{})",
-                    id,
-                    (0..ycsb::NUM_FIELDS)
-                        .map(|_| format!(
-                            "'{}'",
-                            rng.sample_iter(&Alphanumeric)
-                                .take(field_size)
-                                .collect::<String>()
-                        ))
-                        .join(",")
-                ))
-                .join(",")
-        ),
-        params![],
-    )
+    for i in 0..num_rows as usize / 1000 {
+        conn.execute(
+            &format!(
+                "INSERT INTO users VALUES {};",
+                ids.iter()
+                    .skip(i * 1000)
+                    .take(1000)
+                    .map(|&id| format!(
+                        "({},{})",
+                        id,
+                        (0..ycsb::NUM_FIELDS)
+                            .map(|_| format!(
+                                "'{}'",
+                                rng.sample_iter(&Alphanumeric)
+                                    .take(field_size)
+                                    .collect::<String>()
+                            ))
+                            .join(",")
+                    ))
+                    .join(",")
+            ),
+            params![],
+        )
         .unwrap();
+    }
 }
 
 pub struct SQLiteYCSBConnection<'a> {
@@ -566,8 +572,8 @@ pub struct SQLiteYCSBConnection<'a> {
 
 impl<'a> SQLiteYCSBConnection<'a> {
     pub fn new<P>(path: P) -> SQLiteYCSBConnection<'a>
-        where
-            P: AsRef<Path>,
+    where
+        P: AsRef<Path>,
     {
         let conn = Box::into_raw(Box::new(rusqlite::Connection::open(path).unwrap()));
 
