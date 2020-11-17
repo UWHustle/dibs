@@ -3,11 +3,10 @@ use crate::benchmarks::ycsb::YCSBConnection;
 use crate::Connection;
 use itertools::Itertools;
 use mysql::prelude::Queryable;
-use mysql::{params, Conn, OptsBuilder, Params, Statement, TxOpts};
+use mysql::{params, Conn, OptsBuilder, Statement, TxOpts};
 use rand::distributions::Alphanumeric;
 use rand::seq::SliceRandom;
 use rand::Rng;
-use std::iter;
 use std::str::FromStr;
 
 #[derive(PartialEq, Clone, Copy)]
@@ -31,6 +30,9 @@ impl FromStr for IsolationMechanism {
 }
 
 pub fn load_ycsb(num_rows: u32, field_size: usize) {
+    assert!(num_rows > 0);
+    assert_eq!(num_rows % 1000, 0);
+
     let mut rng = rand::thread_rng();
 
     let mut conn = Conn::new(OptsBuilder::new().user(Some("dibs")).db_name(Some("ycsb"))).unwrap();
@@ -50,29 +52,29 @@ pub fn load_ycsb(num_rows: u32, field_size: usize) {
 
     let mut transaction = conn.start_transaction(TxOpts::default()).unwrap();
 
-    transaction
-        .exec_batch(
-            &format!(
-                "INSERT INTO ycsb.users VALUES (:id,{});",
-                (0..ycsb::NUM_FIELDS)
-                    .map(|field| format!(":field_{}", field))
-                    .join(",")
-            ),
-            ids.iter().map(|&id| {
-                Params::Positional(
-                    iter::once(mysql::Value::from(id))
-                        .chain((0..ycsb::NUM_FIELDS).map(|_| {
-                            mysql::Value::from(
+    for i in 0..num_rows as usize / 1000 {
+        transaction
+            .query_drop(&format!(
+                "INSERT INTO ycsb.users VALUES {};",
+                ids.iter()
+                    .skip(i * 1000)
+                    .take(1000)
+                    .map(|&id| format!(
+                        "({},{})",
+                        id,
+                        (0..ycsb::NUM_FIELDS)
+                            .map(|_| format!(
+                                "'{}'",
                                 rng.sample_iter(&Alphanumeric)
                                     .take(field_size)
-                                    .collect::<String>(),
-                            )
-                        }))
-                        .collect(),
-                )
-            }),
-        )
-        .unwrap();
+                                    .collect::<String>()
+                            ))
+                            .join(",")
+                    ))
+                    .join(",")
+            ))
+            .unwrap();
+    }
 
     transaction.commit().unwrap();
 }
