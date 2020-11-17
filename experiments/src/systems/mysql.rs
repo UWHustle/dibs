@@ -35,10 +35,10 @@ pub fn load_ycsb(num_rows: u32, field_size: usize) {
 
     let mut conn = Conn::new(OptsBuilder::new().user(Some("dibs")).db_name(Some("ycsb"))).unwrap();
 
-    conn.query_drop("DROP TABLE IF EXISTS users;").unwrap();
+    conn.query_drop("DROP TABLE IF EXISTS ycsb.users;").unwrap();
 
     conn.query_drop(&format!(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY, {});",
+        "CREATE TABLE ycsb.users (id INTEGER PRIMARY KEY, {});",
         (0..ycsb::NUM_FIELDS)
             .map(|field| format!("field_{} CHAR({})", field, field_size))
             .join(",")
@@ -53,7 +53,7 @@ pub fn load_ycsb(num_rows: u32, field_size: usize) {
     transaction
         .exec_batch(
             &format!(
-                "INSERT INTO users VALUES (:id,{});",
+                "INSERT INTO ycsb.users VALUES (:id,{});",
                 (0..ycsb::NUM_FIELDS)
                     .map(|field| format!(":field_{}", field))
                     .join(",")
@@ -101,15 +101,18 @@ impl MySQLYCSBConnection {
 
         let select_user_stmts = (0..ycsb::NUM_FIELDS)
             .map(|field| {
-                conn.prep(&format!("SELECT field_{} FROM users WHERE id = ?;", field))
-                    .unwrap()
+                conn.prep(&format!(
+                    "SELECT field_{} FROM ycsb.users WHERE id = ?;",
+                    field
+                ))
+                .unwrap()
             })
             .collect();
 
         let update_user_stmts = (0..ycsb::NUM_FIELDS)
             .map(|field| {
                 conn.prep(&format!(
-                    "UPDATE users SET field_{} = :field WHERE id = :id;",
+                    "UPDATE ycsb.users SET field_{} = :field WHERE id = :id;",
                     field
                 ))
                 .unwrap()
