@@ -1,7 +1,7 @@
 use clap::{App, Arg};
 use dibs::OptimizationLevel;
 use dibs_experiments::benchmarks::ycsb;
-use dibs_experiments::systems::mysql::MySQLYCSBConnection;
+use dibs_experiments::systems::mysql::{IsolationMechanism, MySQLYCSBConnection};
 use dibs_experiments::worker::{StandardWorker, Worker};
 use dibs_experiments::{runner, systems};
 use std::str::FromStr;
@@ -14,6 +14,7 @@ fn main() {
         .arg(Arg::with_name("select_mix").required(true))
         .arg(Arg::with_name("num_statements_per_transaction").required(true))
         .arg(Arg::with_name("skew").required(true))
+        .arg(Arg::with_name("isolation").required(true))
         .arg(
             Arg::with_name("optimization")
                 .possible_values(&["ungrouped", "grouped", "prepared", "filtered"])
@@ -28,6 +29,7 @@ fn main() {
     let num_statements_per_transaction =
         usize::from_str(matches.value_of("num_statements_per_transaction").unwrap()).unwrap();
     let skew = f64::from_str(matches.value_of("skew").unwrap()).unwrap();
+    let isolation = IsolationMechanism::from_str(matches.value_of("isolation").unwrap()).unwrap();
     let optimization =
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
@@ -39,22 +41,29 @@ fn main() {
     let mut workers: Vec<Box<dyn Worker + Send>> = vec![];
 
     for worker_id in 0..num_workers {
-        if skew == 0.0 {
-            workers.push(Box::new(StandardWorker::new(
+        let dibs = match isolation {
+            IsolationMechanism::DibsSerializable => Some(Arc::clone(&dibs)),
+            IsolationMechanism::MySQLSerializable | IsolationMechanism::MySQLReadUncommitted => {
+                None
+            }
+        };
+
+        workers.push(if skew == 0.0 {
+            Box::new(StandardWorker::new(
                 worker_id,
-                Some(Arc::clone(&dibs)),
+                dibs,
                 ycsb::uniform_generator(
                     num_rows,
                     field_size,
                     select_mix,
                     num_statements_per_transaction,
                 ),
-                MySQLYCSBConnection::new(),
-            )));
+                MySQLYCSBConnection::new(isolation),
+            ))
         } else {
-            workers.push(Box::new(StandardWorker::new(
+            Box::new(StandardWorker::new(
                 worker_id,
-                Some(Arc::clone(&dibs)),
+                dibs,
                 ycsb::zipf_generator(
                     num_rows,
                     field_size,
@@ -62,9 +71,9 @@ fn main() {
                     num_statements_per_transaction,
                     skew,
                 ),
-                MySQLYCSBConnection::new(),
-            )));
-        }
+                MySQLYCSBConnection::new(isolation),
+            ))
+        });
     }
 
     runner::run(workers);

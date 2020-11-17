@@ -8,6 +8,27 @@ use rand::distributions::Alphanumeric;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use std::iter;
+use std::str::FromStr;
+
+#[derive(PartialEq, Clone, Copy)]
+pub enum IsolationMechanism {
+    MySQLSerializable,
+    MySQLReadUncommitted,
+    DibsSerializable,
+}
+
+impl FromStr for IsolationMechanism {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "MySQLSerializable" => Ok(IsolationMechanism::MySQLSerializable),
+            "MySQLReadUncommitted" => Ok(IsolationMechanism::MySQLReadUncommitted),
+            "DibsSerializable" => Ok(IsolationMechanism::DibsSerializable),
+            _ => Err(()),
+        }
+    }
+}
 
 pub fn load_ycsb(num_rows: u32, field_size: usize) {
     let mut rng = rand::thread_rng();
@@ -63,9 +84,20 @@ pub struct MySQLYCSBConnection {
 }
 
 impl MySQLYCSBConnection {
-    pub fn new() -> MySQLYCSBConnection {
+    pub fn new(isolation: IsolationMechanism) -> MySQLYCSBConnection {
         let mut conn =
             Conn::new(OptsBuilder::new().user(Some("dibs")).db_name(Some("ycsb"))).unwrap();
+
+        conn.query_drop(format!(
+            "SET SESSION TRANSACTION ISOLATION LEVEL {};",
+            match isolation {
+                IsolationMechanism::MySQLSerializable => "SERIALIZABLE",
+                IsolationMechanism::MySQLReadUncommitted | IsolationMechanism::DibsSerializable => {
+                    "READ UNCOMMITTED"
+                }
+            }
+        ))
+        .unwrap();
 
         let select_user_stmts = (0..ycsb::NUM_FIELDS)
             .map(|field| {
