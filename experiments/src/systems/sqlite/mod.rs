@@ -8,6 +8,7 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 use rusqlite::{params, ErrorCode, Statement};
 use std::path::Path;
+use std::time::Duration;
 
 struct SQLiteBaseStatements<'a> {
     begin_stmt: Statement<'a>,
@@ -259,6 +260,16 @@ impl<'a> SQLiteTATPConnection<'a> {
         P: AsRef<Path>,
     {
         let conn = Box::into_raw(Box::new(rusqlite::Connection::open(path).unwrap()));
+
+        unsafe { conn.as_ref() }
+            .unwrap()
+            .busy_timeout(Duration::from_secs(10))
+            .unwrap();
+
+        unsafe { conn.as_ref() }
+            .unwrap()
+            .pragma_update(None, "cache_size", &"-8388608")
+            .unwrap();
 
         let base = SQLiteBaseStatements::new(conn);
 
@@ -576,6 +587,16 @@ impl<'a> SQLiteYCSBConnection<'a> {
         P: AsRef<Path>,
     {
         let conn = Box::into_raw(Box::new(rusqlite::Connection::open(path).unwrap()));
+
+        unsafe { conn.as_ref() }
+            .unwrap()
+            .busy_timeout(Duration::from_secs(10))
+            .unwrap();
+
+        unsafe { conn.as_ref() }
+            .unwrap()
+            .pragma_update(None, "cache_size", &"-8388608")
+            .unwrap();
 
         let base = SQLiteBaseStatements::new(conn);
 
