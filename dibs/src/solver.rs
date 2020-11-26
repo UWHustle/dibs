@@ -302,7 +302,7 @@ fn solve_disjunction_disjunction(
     })
 }
 
-fn dnf_blowup(p: &Predicate) -> usize {
+pub fn dnf_blowup(p: &Predicate) -> usize {
     match p {
         Predicate::Comparison(_) => 1,
         Predicate::Connective(connective, operands) => match connective {
@@ -395,28 +395,11 @@ pub fn evaluate(conflict: &Predicate, p_args: &[Value], q_args: &[Value]) -> boo
     }
 }
 
-pub fn solve_dnf(
-    p: &Predicate,
-    p_args: &[Value],
-    q: &Predicate,
-    q_args: &[Value],
-    blowup_limit: usize,
-) -> bool {
-    if dnf_blowup(p) * dnf_blowup(q) > blowup_limit {
-        return true;
-    }
+pub fn solve_dnf(p: &Predicate, p_args: &[Value], q: &Predicate, q_args: &[Value]) -> bool {
+    debug_assert!(p.is_normalized());
+    debug_assert!(q.is_normalized());
 
-    let mut p_dnf = Cow::Borrowed(p);
-    if !p_dnf.is_normalized() {
-        p_dnf.to_mut().normalize();
-    }
-
-    let mut q_dnf = Cow::Borrowed(q);
-    if !q_dnf.is_normalized() {
-        q_dnf.to_mut().normalize();
-    }
-
-    match (&*p_dnf, &*q_dnf) {
+    match (p, q) {
         (Predicate::Comparison(p_comparison), Predicate::Comparison(q_comparison)) => {
             solve_comparison_comparison(p_comparison, p_args, q_comparison, q_args)
         }
@@ -465,9 +448,10 @@ pub fn solve_clustered(
     p_args: &[Value],
     q: &Predicate,
     q_args: &[Value],
-    blowup_limit: usize,
 ) -> bool {
-    cluster(&p, &q).all(|(p_conjunct, q_conjunct)| {
-        solve_dnf(&p_conjunct, p_args, &q_conjunct, q_args, blowup_limit)
+    cluster(&p, &q).all(|(mut p_conjunct, mut q_conjunct)| {
+        p_conjunct.normalize();
+        q_conjunct.normalize();
+        solve_dnf(&p_conjunct, p_args, &q_conjunct, q_args)
     })
 }

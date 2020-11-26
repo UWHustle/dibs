@@ -251,7 +251,13 @@ impl Dibs {
 
         match self.optimization {
             OptimizationLevel::Ungrouped | OptimizationLevel::Grouped => {
-                let template = &self.prepared_requests[template_id].template;
+                let mut template = self.prepared_requests[template_id].template.clone();
+
+                if self.optimization == OptimizationLevel::Ungrouped
+                    && solver::dnf_blowup(&template.predicate) < self.blowup_limit
+                {
+                    template.predicate.normalize();
+                }
 
                 let request = Arc::new(Request::new(
                     transaction.group_id,
@@ -265,7 +271,7 @@ impl Dibs {
                 conflicting_requests = vec![];
 
                 for bucket in buckets {
-                    conflicting_requests.extend(self.solve_ad_hoc(&request, template, bucket));
+                    conflicting_requests.extend(self.solve_ad_hoc(&request, &template, bucket));
                 }
 
                 transaction.buckets.extend(buckets.iter().cloned());
@@ -357,14 +363,12 @@ impl Dibs {
                             &request.arguments,
                             &other_template.predicate,
                             &other_request.arguments,
-                            self.blowup_limit,
                         ),
                         _ => solver::solve_clustered(
                             &template.predicate,
                             &request.arguments,
                             &other_template.predicate,
                             &other_request.arguments,
-                            self.blowup_limit,
                         ),
                     }
             }
@@ -399,7 +403,6 @@ impl Dibs {
                             &request.arguments,
                             &other_template.predicate,
                             &other_request.arguments,
-                            self.blowup_limit,
                         )
                     }
                     &RequestVariant::Prepared(other_prepared_id) => {
