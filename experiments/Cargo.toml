@@ -17,6 +17,7 @@ clap = "2.33"
 arrow = "2.0"
 rusqlite = "0.24"
 mysql = "20.0"
+odbc = "0.17"
 
 [build-dependencies]
 cc = "1.0"
