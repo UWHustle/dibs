@@ -21,6 +21,8 @@ pub fn load_tatp(num_rows: u32) {
             .unwrap();
     };
 
+    exec_direct("USE dibs;");
+
     exec_direct("DROP TABLE IF EXISTS call_forwarding;");
     exec_direct("DROP TABLE IF EXISTS special_facility;");
     exec_direct("DROP TABLE IF EXISTS access_info;");
@@ -38,15 +40,17 @@ pub fn load_tatp(num_rows: u32) {
                     byte2_5 TINYINT, byte2_6 TINYINT, byte2_7 TINYINT, byte2_8 TINYINT,
                     byte2_9 TINYINT, byte2_10 TINYINT,
                     msc_location BIGINT, vlr_location BIGINT,
-                    PRIMARY KEY (s_id));",
+                    PRIMARY KEY NONCLUSTERED (s_id))
+                WITH (MEMORY_OPTIMIZED = ON);",
     );
 
     exec_direct(
         "CREATE TABLE access_info (s_id INTEGER NOT NULL,
                 ai_type TINYINT NOT NULL,
                 data1 TINYINT, data2 TINYINT, data3 VARCHAR(3), data4 VARCHAR(5),
-                PRIMARY KEY (s_id, ai_type),
-                FOREIGN KEY (s_id) REFERENCES subscriber (s_id));",
+                PRIMARY KEY NONCLUSTERED (s_id, ai_type),
+                FOREIGN KEY (s_id) REFERENCES subscriber (s_id))
+             WITH (MEMORY_OPTIMIZED = ON);",
     );
 
     exec_direct(
@@ -54,15 +58,17 @@ pub fn load_tatp(num_rows: u32) {
                 sf_type TINYINT NOT NULL,
                 is_active TINYINT, error_cntrl TINYINT,
                 data_a TINYINT, data_b VARCHAR(5),
-                PRIMARY KEY (s_id, sf_type),
-                FOREIGN KEY (s_id) REFERENCES subscriber (s_id));",
+                PRIMARY KEY NONCLUSTERED (s_id, sf_type),
+                FOREIGN KEY (s_id) REFERENCES subscriber (s_id))
+             WITH (MEMORY_OPTIMIZED = ON);",
     );
 
     exec_direct(
         "CREATE TABLE call_forwarding (s_id INTEGER NOT NULL,
                 sf_type TINYINT NOT NULL,
                 start_time TINYINT, end_time TINYINT, numberx VARCHAR(15),
-                PRIMARY KEY (s_id, sf_type, start_time) WITH (IGNORE_DUP_KEY = ON));",
+                PRIMARY KEY NONCLUSTERED (s_id, sf_type, start_time))
+             WITH (MEMORY_OPTIMIZED = ON);",
     );
 
     let mut s_ids = (1..=num_rows).collect::<Vec<_>>();
@@ -193,6 +199,7 @@ pub struct SQLServerTATPConnection<'a> {
     update_special_facility_data_stmt: Option<Statement<'a>>,
     update_subscriber_location_stmt: Option<Statement<'a>>,
     get_special_facility_types_stmt: Option<Statement<'a>>,
+    check_call_forwarding_stmt: Option<Statement<'a>>,
     insert_call_forwarding_stmt: Option<Statement<'a>>,
     delete_call_forwarding_stmt: Option<Statement<'a>>,
     conn: Box<odbc::Connection<'a, odbc::odbc_safe::AutocommitOff>>,
@@ -210,6 +217,11 @@ impl<'a> SQLServerTATPConnection<'a> {
                 .disable_autocommit()
                 .unwrap(),
         ));
+
+        odbc::Statement::with_parent(unsafe { &*conn })
+            .unwrap()
+            .exec_direct("USE dibs;")
+            .unwrap();
 
         let prepare = |sql| {
             Some(
@@ -269,6 +281,12 @@ impl<'a> SQLServerTATPConnection<'a> {
             WHERE s_id = ?;",
         );
 
+        let check_call_forwarding_stmt = prepare(
+            "SELECT *
+            FROM call_forwarding
+            WHERE s_id = ? AND sf_type = ? AND start_time = ?;",
+        );
+
         let insert_call_forwarding_stmt = prepare(
             "INSERT INTO call_forwarding
             VALUES (?, ?, ?, ?, ?);",
@@ -287,6 +305,7 @@ impl<'a> SQLServerTATPConnection<'a> {
             update_special_facility_data_stmt,
             update_subscriber_location_stmt,
             get_special_facility_types_stmt,
+            check_call_forwarding_stmt,
             insert_call_forwarding_stmt,
             delete_call_forwarding_stmt,
             conn: unsafe { Box::from_raw(conn) },
@@ -468,14 +487,32 @@ impl<'a> TATPConnection for SQLServerTATPConnection<'a> {
         end_time: u8,
         numberx: &str,
     ) {
-        let mut stmt = self.insert_call_forwarding_stmt.take().unwrap();
+        let mut stmt = self.check_call_forwarding_stmt.take().unwrap();
         stmt = stmt.bind_parameter(1, &s_id).unwrap();
         stmt = stmt.bind_parameter(2, &sf_type).unwrap();
         stmt = stmt.bind_parameter(3, &start_time).unwrap();
-        stmt = stmt.bind_parameter(4, &end_time).unwrap();
-        stmt = stmt.bind_parameter(5, &numberx).unwrap();
 
-        self.insert_call_forwarding_stmt = Some(execute_update(stmt));
+        match stmt.execute().unwrap() {
+            odbc::ResultSetState::Data(mut stmt) => {
+                if stmt.fetch().unwrap().is_none() {
+                    self.check_call_forwarding_stmt =
+                        Some(stmt.close_cursor().unwrap().reset_parameters().unwrap());
+
+                    let mut stmt = self.insert_call_forwarding_stmt.take().unwrap();
+                    stmt = stmt.bind_parameter(1, &s_id).unwrap();
+                    stmt = stmt.bind_parameter(2, &sf_type).unwrap();
+                    stmt = stmt.bind_parameter(3, &start_time).unwrap();
+                    stmt = stmt.bind_parameter(4, &end_time).unwrap();
+                    stmt = stmt.bind_parameter(5, &numberx).unwrap();
+
+                    self.insert_call_forwarding_stmt = Some(execute_update(stmt));
+                } else {
+                    self.check_call_forwarding_stmt =
+                        Some(stmt.close_cursor().unwrap().reset_parameters().unwrap());
+                }
+            }
+            odbc::ResultSetState::NoData(_) => panic!(),
+        }
     }
 
     fn delete_call_forwarding(&mut self, s_id: u32, sf_type: u8, start_time: u8) {
