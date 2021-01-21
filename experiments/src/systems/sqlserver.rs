@@ -12,7 +12,7 @@ pub fn load_tatp(num_rows: u32) {
     let mut rng = rand::thread_rng();
 
     let env = odbc::create_environment_v3().unwrap();
-    let conn = env.connect("DIBS", "SA", "dibs123!").unwrap();
+    let conn = env.connect("DIBS", "SA", "DIBS123!").unwrap();
 
     let exec_direct = |sql| {
         odbc::Statement::with_parent(&conn)
@@ -34,17 +34,17 @@ pub fn load_tatp(num_rows: u32) {
                     hex_1 TINYINT, hex_2 TINYINT, hex_3 TINYINT, hex_4 TINYINT,
                     hex_5 TINYINT, hex_6 TINYINT, hex_7 TINYINT, hex_8 TINYINT,
                     hex_9 TINYINT, hex_10 TINYINT,
-                    byte2_1 SMALLINT, byte2_2 SMALLINT, byte2_3 SMALLINT, byte2_4 SMALLINT,
-                    byte2_5 SMALLINT, byte2_6 SMALLINT, byte2_7 SMALLINT, byte2_8 SMALLINT,
-                    byte2_9 SMALLINT, byte2_10 SMALLINT,
-                    msc_location INTEGER, vlr_location INTEGER, 
+                    byte2_1 TINYINT, byte2_2 TINYINT, byte2_3 TINYINT, byte2_4 TINYINT,
+                    byte2_5 TINYINT, byte2_6 TINYINT, byte2_7 TINYINT, byte2_8 TINYINT,
+                    byte2_9 TINYINT, byte2_10 TINYINT,
+                    msc_location BIGINT, vlr_location BIGINT,
                     PRIMARY KEY (s_id));",
     );
 
     exec_direct(
         "CREATE TABLE access_info (s_id INTEGER NOT NULL,
                 ai_type TINYINT NOT NULL,
-                data1 SMALLINT, data2 SMALLINT, data3 VARCHAR(3), data4 VARCHAR(5),
+                data1 TINYINT, data2 TINYINT, data3 VARCHAR(3), data4 VARCHAR(5),
                 PRIMARY KEY (s_id, ai_type),
                 FOREIGN KEY (s_id) REFERENCES subscriber (s_id));",
     );
@@ -52,8 +52,8 @@ pub fn load_tatp(num_rows: u32) {
     exec_direct(
         "CREATE TABLE special_facility (s_id INTEGER NOT NULL,
                 sf_type TINYINT NOT NULL,
-                is_active TINYINT, error_cntrl SMALLINT,
-                data_a SMALLINT, data_b VARCHAR(5),
+                is_active TINYINT, error_cntrl TINYINT,
+                data_a TINYINT, data_b VARCHAR(5),
                 PRIMARY KEY (s_id, sf_type),
                 FOREIGN KEY (s_id) REFERENCES subscriber (s_id));",
     );
@@ -62,9 +62,7 @@ pub fn load_tatp(num_rows: u32) {
         "CREATE TABLE call_forwarding (s_id INTEGER NOT NULL,
                 sf_type TINYINT NOT NULL,
                 start_time TINYINT, end_time TINYINT, numberx VARCHAR(15),
-                PRIMARY KEY (s_id, sf_type, start_time),
-                FOREIGN KEY (s_id, sf_type)
-                REFERENCES special_facility (s_id, sf_type));",
+                PRIMARY KEY (s_id, sf_type, start_time) WITH (IGNORE_DUP_KEY = ON));",
     );
 
     let mut s_ids = (1..=num_rows).collect::<Vec<_>>();
@@ -113,8 +111,8 @@ pub fn load_tatp(num_rows: u32) {
                         (0..10).map(|_| rng.gen_range(0, 2)).join(","),
                         (0..10).map(|_| rng.gen_range(0, 16)).join(","),
                         (0..10).map(|_| rng.gen_range(0, 256)).join(","),
-                        rng.gen::<i32>(),
-                        rng.gen::<i32>(),
+                        rng.gen::<u32>(),
+                        rng.gen::<u32>(),
                     ))
                     .join(",")
             ))
@@ -335,22 +333,22 @@ impl<'a> TATPConnection for SQLServerTATPConnection<'a> {
 
                 let mut bit = [false; 10];
                 for i in 0..10 {
-                    bit[i] = cursor.get_data((i + 1) as u16).unwrap().unwrap();
+                    bit[i] = cursor.get_data((i + 2) as u16).unwrap().unwrap();
                 }
 
                 let mut hex = [0; 10];
                 for i in 0..10 {
-                    hex[i] = cursor.get_data((i + 11) as u16).unwrap().unwrap();
+                    hex[i] = cursor.get_data((i + 12) as u16).unwrap().unwrap();
                 }
 
                 let mut byte2 = [0; 10];
                 for i in 0..10 {
-                    byte2[i] = cursor.get_data((i + 21) as u16).unwrap().unwrap();
+                    byte2[i] = cursor.get_data((i + 22) as u16).unwrap().unwrap();
                 }
 
-                let msc_location = cursor.get_data(31).unwrap().unwrap();
+                let msc_location = cursor.get_data(32).unwrap().unwrap();
 
-                let vlr_location = cursor.get_data(32).unwrap().unwrap();
+                let vlr_location = cursor.get_data(33).unwrap().unwrap();
 
                 self.get_subscriber_data_stmt =
                     Some(stmt.close_cursor().unwrap().reset_parameters().unwrap());

@@ -27,5 +27,5 @@ fn main() {
         )));
     }
 
-    // runner::run(workers);
+    runner::run(workers);
 }

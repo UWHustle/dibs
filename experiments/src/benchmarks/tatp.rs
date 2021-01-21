@@ -356,7 +356,7 @@ impl Generator for TATPGenerator {
                 sf_type,
             }
         } else if transaction_type < 0.96 {
-            let vlr_location = rng.gen();
+            let vlr_location = rng.gen_range(0, i32::max_value()) as u32;
 
             TATPProcedure::UpdateLocation { vlr_location, s_id }
         } else if transaction_type < 0.98 {
