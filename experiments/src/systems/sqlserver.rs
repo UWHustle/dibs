@@ -212,120 +212,133 @@ pub fn load_tatp(num_rows: u32) {
         );
     }
 
-    exec_direct(
-        &conn,
-        "CREATE PROCEDURE tatp.get_subscriber_data
-            (@s_id INT)
-        WITH NATIVE_COMPILATION, SCHEMABINDING, EXECUTE AS OWNER
-        AS BEGIN ATOMIC WITH
-        (TRANSACTION ISOLATION LEVEL = SERIALIZABLE, LANGUAGE = 'english')
-            SELECT
-                bit_1, bit_2, bit_3, bit_4, bit_5,
-                bit_6, bit_7, bit_8, bit_9, bit_10,
-                hex_1, hex_2, hex_3, hex_4, hex_5,
-                hex_6, hex_7, hex_8, hex_9, hex_10,
-                byte2_1, byte2_2, byte2_3, byte2_4, byte2_5,
-                byte2_6, byte2_7, byte2_8, byte2_9, byte2_10,
-                msc_location, vlr_location
-            FROM tatp.subscriber
-            WHERE s_id = @s_id;
-        END",
+    let prepare = |name, params: &[&str], sql| {
+        exec_direct(
+            &conn,
+            &format!(
+                "CREATE PROCEDURE {}
+                ({})
+                WITH NATIVE_COMPILATION, SCHEMABINDING, EXECUTE AS OWNER
+                AS BEGIN ATOMIC WITH
+                (TRANSACTION ISOLATION LEVEL = SERIALIZABLE, LANGUAGE = 'english')
+                    DECLARE @retry BIT = 1;
+                    WHILE (@retry = 1)
+                    BEGIN
+                        BEGIN TRY
+                            {}
+                            SET @retry = 0;
+                        END TRY
+                        
+                        BEGIN CATCH
+                            IF (ERROR_NUMBER() NOT IN 
+                                (41302, 41305, 41325, 41301, 41823, 41840, 41839, 1205))
+                            BEGIN
+                                THROW
+                            END
+                        END CATCH
+                    END
+                END",
+                name,
+                params.iter().join(", "),
+                sql,
+            ),
+        );
+    };
+
+    prepare(
+        "tatp.get_subscriber_data",
+        &["@s_id INT"],
+        "SELECT
+            bit_1, bit_2, bit_3, bit_4, bit_5,
+            bit_6, bit_7, bit_8, bit_9, bit_10,
+            hex_1, hex_2, hex_3, hex_4, hex_5,
+            hex_6, hex_7, hex_8, hex_9, hex_10,
+            byte2_1, byte2_2, byte2_3, byte2_4, byte2_5,
+            byte2_6, byte2_7, byte2_8, byte2_9, byte2_10,
+            msc_location, vlr_location
+        FROM tatp.subscriber
+        WHERE s_id = @s_id;",
     );
 
-    exec_direct(
-        &conn,
-        "CREATE PROCEDURE tatp.get_new_destination
-            (@s_id INT, @sf_type TINYINT, @start_time TINYINT, @end_time TINYINT)
-        WITH NATIVE_COMPILATION, SCHEMABINDING, EXECUTE AS OWNER
-        AS BEGIN ATOMIC WITH
-        (TRANSACTION ISOLATION LEVEL = SERIALIZABLE, LANGUAGE = 'english')
-            SELECT cf.numberx
-            FROM tatp.special_facility AS sf, tatp.call_forwarding AS cf
-            WHERE
-                (sf.s_id = @s_id
-                    AND sf.sf_type = @sf_type
-                    AND sf.is_active = 1)
-                AND (cf.s_id = sf.s_id
-                    AND cf.sf_type = sf.sf_type)
-                AND (cf.start_time <= @start_time
-                    AND @end_time < cf.end_time);
-        END",
+    prepare(
+        "tatp.get_new_destination",
+        &[
+            "@s_id INT",
+            "@sf_type TINYINT",
+            "@start_time TINYINT",
+            "@end_time TINYINT",
+        ],
+        "SELECT cf.numberx
+        FROM tatp.special_facility AS sf, tatp.call_forwarding AS cf
+        WHERE
+            (sf.s_id = @s_id
+                AND sf.sf_type = @sf_type
+                AND sf.is_active = 1)
+            AND (cf.s_id = sf.s_id
+                AND cf.sf_type = sf.sf_type)
+            AND (cf.start_time <= @start_time
+                AND @end_time < cf.end_time);",
     );
 
-    exec_direct(
-        &conn,
-        "CREATE PROCEDURE tatp.get_access_data
-            (@s_id INT, @ai_type TINYINT)
-        WITH NATIVE_COMPILATION, SCHEMABINDING, EXECUTE AS OWNER
-        AS BEGIN ATOMIC WITH
-        (TRANSACTION ISOLATION LEVEL = SERIALIZABLE, LANGUAGE = 'english')
-            SELECT data1, data2, data3, data4
-            FROM tatp.access_info
-            WHERE s_id = @s_id
-                AND ai_type = @ai_type
-        END",
+    prepare(
+        "tatp.get_access_data",
+        &["@s_id INT", "@ai_type TINYINT"],
+        "SELECT data1, data2, data3, data4
+        FROM tatp.access_info
+        WHERE s_id = @s_id
+            AND ai_type = @ai_type",
     );
 
-    exec_direct(
-        &conn,
-        "CREATE PROCEDURE tatp.update_subscriber_data
-            (@bit_1 TINYINT, @s_id INT, @data_a TINYINT, @sf_type TINYINT)
-        WITH NATIVE_COMPILATION, SCHEMABINDING, EXECUTE AS OWNER
-        AS BEGIN ATOMIC WITH
-        (TRANSACTION ISOLATION LEVEL = SERIALIZABLE, LANGUAGE = 'english')
-            UPDATE tatp.subscriber
-            SET bit_1 = @bit_1
-            WHERE s_id = @s_id;
+    prepare(
+        "tatp.update_subscriber_data",
+        &[
+            "@bit_1 TINYINT",
+            "@s_id INT",
+            "@data_a TINYINT",
+            "@sf_type TINYINT",
+        ],
+        "UPDATE tatp.subscriber
+        SET bit_1 = @bit_1
+        WHERE s_id = @s_id;
 
-            UPDATE tatp.special_facility
-            SET data_a = @data_a
-            WHERE s_id = @s_id
-                AND sf_type = @sf_type;
-        END",
+        UPDATE tatp.special_facility
+        SET data_a = @data_a
+        WHERE s_id = @s_id
+            AND sf_type = @sf_type;",
     );
 
-    exec_direct(
-        &conn,
-        "CREATE PROCEDURE tatp.update_location
-            (@vlr_location BIGINT, @s_id INT)
-        WITH NATIVE_COMPILATION, SCHEMABINDING, EXECUTE AS OWNER
-        AS BEGIN ATOMIC WITH
-        (TRANSACTION ISOLATION LEVEL = SERIALIZABLE, LANGUAGE = 'english')
-            UPDATE tatp.subscriber
-            SET vlr_location = @vlr_location
-            WHERE s_id = @s_id;
-        END",
+    prepare(
+        "tatp.update_location",
+        &["@vlr_location BIGINT", "@s_id INT"],
+        "UPDATE tatp.subscriber
+        SET vlr_location = @vlr_location
+        WHERE s_id = @s_id;",
     );
 
-    exec_direct(
-        &conn,
-        "CREATE PROCEDURE tatp.insert_call_forwarding
-            (@s_id INT, @sf_type TINYINT, @start_time TINYINT,
-        @end_time TINYINT, @numberx VARCHAR(15))
-        WITH NATIVE_COMPILATION, SCHEMABINDING, EXECUTE AS OWNER
-        AS BEGIN ATOMIC WITH
-        (TRANSACTION ISOLATION LEVEL = SERIALIZABLE, LANGUAGE = 'english')
-            SELECT sf_type
-            FROM tatp.special_facility
-            WHERE s_id = @s_id;
+    prepare(
+        "tatp.insert_call_forwarding",
+        &[
+            "@s_id INT",
+            "@sf_type TINYINT",
+            "@start_time TINYINT",
+            "@end_time TINYINT",
+            "@numberx VARCHAR(15)",
+        ],
+        "SELECT sf_type
+        FROM tatp.special_facility
+        WHERE s_id = @s_id;
 
-            INSERT INTO tatp.call_forwarding
-            VALUES (@s_id, @sf_type, @start_time, @end_time, @numberx);
-        END",
+        INSERT INTO tatp.call_forwarding
+        VALUES (@s_id, @sf_type, @start_time, @end_time, @numberx);",
     );
 
-    exec_direct(
-        &conn,
-        "CREATE PROCEDURE tatp.delete_call_forwarding
-            (@s_id INT, @sf_type TINYINT, @start_time TINYINT)
-        WITH NATIVE_COMPILATION, SCHEMABINDING, EXECUTE AS OWNER
-        AS BEGIN ATOMIC WITH
-        (TRANSACTION ISOLATION LEVEL = SERIALIZABLE, LANGUAGE = 'english')
-            DELETE FROM tatp.call_forwarding
-            WHERE s_id = @s_id
-                AND sf_type = @sf_type
-                AND start_time = @start_time;
-        END",
+    prepare(
+        "tatp.delete_call_forwarding",
+        &["@s_id INT", "@sf_type TINYINT", "@start_time TINYINT"],
+        "DELETE FROM tatp.call_forwarding
+        WHERE s_id = @s_id
+            AND sf_type = @sf_type
+            AND start_time = @start_time;",
     );
 }
 
