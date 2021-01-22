@@ -1,6 +1,5 @@
-use crate::{Connection, Generator, Procedure};
+use crate::{AccessType, Connection, Generator, Procedure};
 use dibs::{Dibs, Transaction};
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
@@ -38,32 +37,27 @@ impl State {
     }
 }
 
-pub struct ReadOnlyGenerator<G, C>
+pub struct ReadOnlyGenerator<G>
 where
     G: Generator,
 {
     inner: G,
     sender: SyncSender<G::Item>,
-    _phantom: PhantomData<C>,
 }
 
-impl<G, C> ReadOnlyGenerator<G, C>
+impl<G> ReadOnlyGenerator<G>
 where
     G: Generator,
 {
-    pub fn new(inner: G, sender: SyncSender<G::Item>) -> ReadOnlyGenerator<G, C> {
-        ReadOnlyGenerator {
-            inner,
-            sender,
-            _phantom: PhantomData::default(),
-        }
+    pub fn new(inner: G, sender: SyncSender<G::Item>) -> ReadOnlyGenerator<G> {
+        ReadOnlyGenerator { inner, sender }
     }
 }
 
-impl<G, C> Generator for ReadOnlyGenerator<G, C>
+impl<G> Generator for ReadOnlyGenerator<G>
 where
     G: Generator,
-    G::Item: Procedure<C>,
+    G::Item: AccessType,
 {
     type Item = G::Item;
 

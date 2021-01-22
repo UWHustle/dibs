@@ -1,4 +1,4 @@
-use crate::{Generator, Procedure};
+use crate::{AccessType, Generator, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
 use dibs::{AcquireError, Dibs, OptimizationLevel, RequestTemplate, Transaction};
 use fnv::FnvHashSet;
@@ -136,7 +136,7 @@ pub enum TATPProcedure {
     },
 }
 
-impl<C: TATPConnection> Procedure<C> for TATPProcedure {
+impl AccessType for TATPProcedure {
     fn is_read_only(&self) -> bool {
         match self {
             TATPProcedure::GetSubscriberData { .. }
@@ -148,7 +148,12 @@ impl<C: TATPConnection> Procedure<C> for TATPProcedure {
             | TATPProcedure::DeleteCallForwarding { .. } => false,
         }
     }
+}
 
+impl<C> Procedure<C> for TATPProcedure
+where
+    C: TATPConnection,
+{
     fn execute(
         &self,
         dibs: &Option<Arc<Dibs>>,

@@ -1,4 +1,4 @@
-use crate::{Generator, OptimizationLevel, Procedure};
+use crate::{AccessType, Generator, OptimizationLevel, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
 use dibs::{AcquireError, Dibs, RequestTemplate, Transaction};
 use fnv::FnvHashSet;
@@ -49,14 +49,19 @@ impl YCSBProcedure {
     }
 }
 
-impl<C: YCSBConnection> Procedure<C> for YCSBProcedure {
+impl AccessType for YCSBProcedure {
     fn is_read_only(&self) -> bool {
         self.statements.iter().all(|statement| match statement {
             YCSBStatement::SelectUser { .. } => true,
             YCSBStatement::UpdateUser { .. } => false,
         })
     }
+}
 
+impl<C> Procedure<C> for YCSBProcedure
+where
+    C: YCSBConnection,
+{
     fn execute(
         &self,
         dibs: &Option<Arc<Dibs>>,

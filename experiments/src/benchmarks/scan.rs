@@ -1,4 +1,4 @@
-use crate::{Generator, Procedure};
+use crate::{AccessType, Generator, Procedure};
 use dibs::predicate::{ComparisonOperator, Predicate, Value};
 use dibs::{AcquireError, Dibs, OptimizationLevel, RequestTemplate, Transaction};
 use fnv::FnvHashSet;
@@ -68,14 +68,19 @@ fn byte2_to_arguments(byte2: &[(u8, u8, u8, u8); 10]) -> Vec<Value> {
     arguments
 }
 
-impl<C: ScanConnection> Procedure<C> for ScanProcedure {
+impl AccessType for ScanProcedure {
     fn is_read_only(&self) -> bool {
         match self {
             ScanProcedure::GetSubscriberDataScan { .. } => true,
             ScanProcedure::UpdateSubscriberLocationScan { .. } => false,
         }
     }
+}
 
+impl<C> Procedure<C> for ScanProcedure
+where
+    C: ScanConnection,
+{
     fn execute(
         &self,
         dibs: &Option<Arc<Dibs>>,

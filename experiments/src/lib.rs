@@ -6,8 +6,11 @@ pub mod runner;
 pub mod systems;
 pub mod worker;
 
-pub trait Procedure<C> {
+pub trait AccessType {
     fn is_read_only(&self) -> bool;
+}
+
+pub trait Procedure<C> {
     fn execute(
         &self,
         dibs: &Option<Arc<Dibs>>,
