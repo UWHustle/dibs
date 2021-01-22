@@ -63,7 +63,7 @@ pub fn load_tatp(num_rows: u32) {
                     byte2_9 TINYINT, byte2_10 TINYINT,
                     msc_location BIGINT, vlr_location BIGINT,
                     PRIMARY KEY NONCLUSTERED (s_id))
-                WITH (MEMORY_OPTIMIZED = ON);",
+                WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_ONLY);",
     );
 
     exec_direct(
@@ -73,7 +73,7 @@ pub fn load_tatp(num_rows: u32) {
                 data1 TINYINT, data2 TINYINT, data3 VARCHAR(3), data4 VARCHAR(5),
                 PRIMARY KEY NONCLUSTERED (s_id, ai_type),
                 FOREIGN KEY (s_id) REFERENCES tatp.subscriber (s_id))
-             WITH (MEMORY_OPTIMIZED = ON);",
+             WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_ONLY);",
     );
 
     exec_direct(
@@ -84,7 +84,7 @@ pub fn load_tatp(num_rows: u32) {
                 data_a TINYINT, data_b VARCHAR(5),
                 PRIMARY KEY NONCLUSTERED (s_id, sf_type),
                 FOREIGN KEY (s_id) REFERENCES tatp.subscriber (s_id))
-             WITH (MEMORY_OPTIMIZED = ON);",
+             WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_ONLY);",
     );
 
     exec_direct(
@@ -93,7 +93,7 @@ pub fn load_tatp(num_rows: u32) {
                 sf_type TINYINT NOT NULL,
                 start_time TINYINT, end_time TINYINT, numberx VARCHAR(15),
                 PRIMARY KEY NONCLUSTERED (s_id, sf_type, start_time))
-             WITH (MEMORY_OPTIMIZED = ON);",
+             WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_ONLY);",
     );
 
     let mut s_ids = (1..=num_rows).collect::<Vec<_>>();
