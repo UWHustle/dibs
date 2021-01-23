@@ -12,6 +12,25 @@ fn exec_direct(conn: &odbc::Connection<odbc::safe::AutocommitOn>, sql: &str) {
         .unwrap();
 }
 
+fn exec_direct_with_retry<'a>(
+    conn: &'a odbc::Connection<odbc::safe::AutocommitOn>,
+    sql: &'a str,
+) -> odbc::ResultSetState<'a, 'a, odbc::Executed, odbc::safe::AutocommitOn> {
+    loop {
+        match odbc::Statement::with_parent(&conn)
+            .unwrap()
+            .exec_direct(sql)
+        {
+            Ok(result) => {
+                break result;
+            }
+            Err(error) => {
+                println!("{}", error.to_string());
+            }
+        }
+    }
+}
+
 pub fn load_tatp(num_rows: u32) {
     assert!(num_rows > 0);
     assert_eq!(num_rows % 100, 0);
@@ -221,22 +240,7 @@ pub fn load_tatp(num_rows: u32) {
                 WITH NATIVE_COMPILATION, SCHEMABINDING, EXECUTE AS OWNER
                 AS BEGIN ATOMIC WITH
                 (TRANSACTION ISOLATION LEVEL = SERIALIZABLE, LANGUAGE = 'english')
-                    DECLARE @retry BIT = 1;
-                    WHILE (@retry = 1)
-                    BEGIN
-                        BEGIN TRY
-                            {}
-                            SET @retry = 0;
-                        END TRY
-                        
-                        BEGIN CATCH
-                            IF (ERROR_NUMBER() NOT IN 
-                                (41302, 41305, 41325, 41301, 41823, 41840, 41839, 1205))
-                            BEGIN
-                                THROW
-                            END
-                        END CATCH
-                    END
+                {}
                 END",
                 name,
                 params.iter().join(", "),
@@ -373,13 +377,10 @@ impl Connection for SQLServerTATPConnection<'_> {
 
 impl<'a> TATPSPConnection for SQLServerTATPConnection<'a> {
     fn get_subscriber_data(&mut self, s_id: u32) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32) {
-        match odbc::Statement::with_parent(&self.conn)
-            .unwrap()
-            .bind_parameter(1, &s_id)
-            .unwrap()
-            .exec_direct("{ CALL tatp.get_subscriber_data (?) }")
-            .unwrap()
-        {
+        match exec_direct_with_retry(
+            &self.conn,
+            &format!("{{ CALL tatp.get_subscriber_data ({}) }}", s_id),
+        ) {
             odbc::ResultSetState::Data(mut stmt) => {
                 let mut cursor = stmt.fetch().unwrap().unwrap();
 
@@ -415,19 +416,13 @@ impl<'a> TATPSPConnection for SQLServerTATPConnection<'a> {
         start_time: u8,
         end_time: u8,
     ) -> Vec<String> {
-        match odbc::Statement::with_parent(&self.conn)
-            .unwrap()
-            .bind_parameter(1, &s_id)
-            .unwrap()
-            .bind_parameter(2, &sf_type)
-            .unwrap()
-            .bind_parameter(3, &start_time)
-            .unwrap()
-            .bind_parameter(4, &end_time)
-            .unwrap()
-            .exec_direct("{ CALL tatp.get_new_destination (?, ?, ?, ?) }")
-            .unwrap()
-        {
+        match exec_direct_with_retry(
+            &self.conn,
+            &format!(
+                "{{ CALL tatp.get_new_destination ({}, {}, {}, {}) }}",
+                s_id, sf_type, start_time, end_time
+            ),
+        ) {
             odbc::ResultSetState::Data(mut stmt) => {
                 let mut numberx = vec![];
 
@@ -442,15 +437,10 @@ impl<'a> TATPSPConnection for SQLServerTATPConnection<'a> {
     }
 
     fn get_access_data(&mut self, s_id: u32, ai_type: u8) -> Option<(u8, u8, String, String)> {
-        match odbc::Statement::with_parent(&self.conn)
-            .unwrap()
-            .bind_parameter(1, &s_id)
-            .unwrap()
-            .bind_parameter(2, &ai_type)
-            .unwrap()
-            .exec_direct("{ CALL tatp.get_access_data (?, ?) }")
-            .unwrap()
-        {
+        match exec_direct_with_retry(
+            &self.conn,
+            &format!("{{ CALL tatp.get_access_data ({}, {}) }}", s_id, ai_type),
+        ) {
             odbc::ResultSetState::Data(mut stmt) => stmt.fetch().unwrap().map(|mut cursor| {
                 let data1 = cursor.get_data(1).unwrap().unwrap();
                 let data2 = cursor.get_data(2).unwrap().unwrap();
@@ -464,29 +454,23 @@ impl<'a> TATPSPConnection for SQLServerTATPConnection<'a> {
     }
 
     fn update_subscriber_data(&mut self, bit_1: bool, s_id: u32, data_a: u8, sf_type: u8) {
-        odbc::Statement::with_parent(&self.conn)
-            .unwrap()
-            .bind_parameter(1, &bit_1)
-            .unwrap()
-            .bind_parameter(2, &s_id)
-            .unwrap()
-            .bind_parameter(3, &data_a)
-            .unwrap()
-            .bind_parameter(4, &sf_type)
-            .unwrap()
-            .exec_direct("{ CALL tatp.update_subscriber_data (?, ?, ?, ?) }")
-            .unwrap();
+        exec_direct_with_retry(
+            &self.conn,
+            &format!(
+                "{{ CALL tatp.update_subscriber_data ({}, {}, {}, {}) }}",
+                bit_1 as u8, s_id, data_a, sf_type
+            ),
+        );
     }
 
     fn update_location(&mut self, vlr_location: u32, s_id: u32) {
-        odbc::Statement::with_parent(&self.conn)
-            .unwrap()
-            .bind_parameter(1, &vlr_location)
-            .unwrap()
-            .bind_parameter(2, &s_id)
-            .unwrap()
-            .exec_direct("{ CALL tatp.update_location (?, ?) }")
-            .unwrap();
+        exec_direct_with_retry(
+            &self.conn,
+            &format!(
+                "{{ CALL tatp.update_location ({}, {}) }}",
+                vlr_location, s_id
+            ),
+        );
     }
 
     fn insert_call_forwarding(
@@ -497,32 +481,22 @@ impl<'a> TATPSPConnection for SQLServerTATPConnection<'a> {
         end_time: u8,
         numberx: &str,
     ) {
-        odbc::Statement::with_parent(&self.conn)
-            .unwrap()
-            .bind_parameter(1, &s_id)
-            .unwrap()
-            .bind_parameter(2, &sf_type)
-            .unwrap()
-            .bind_parameter(3, &start_time)
-            .unwrap()
-            .bind_parameter(4, &end_time)
-            .unwrap()
-            .bind_parameter(5, &numberx)
-            .unwrap()
-            .exec_direct("{ CALL tatp.insert_call_forwarding (?, ?, ?, ?, ?) }")
-            .unwrap();
+        exec_direct_with_retry(
+            &self.conn,
+            &format!(
+                "{{ CALL tatp.insert_call_forwarding ({}, {}, {}, {}, '{}') }}",
+                s_id, sf_type, start_time, end_time, numberx
+            ),
+        );
     }
 
     fn delete_call_forwarding(&mut self, s_id: u32, sf_type: u8, start_time: u8) {
-        odbc::Statement::with_parent(&self.conn)
-            .unwrap()
-            .bind_parameter(1, &s_id)
-            .unwrap()
-            .bind_parameter(2, &sf_type)
-            .unwrap()
-            .bind_parameter(3, &start_time)
-            .unwrap()
-            .exec_direct("{ CALL tatp.delete_call_forwarding (?, ?, ?) }")
-            .unwrap();
+        exec_direct_with_retry(
+            &self.conn,
+            &format!(
+                "{{ CALL tatp.delete_call_forwarding ({}, {}, {}) }}",
+                s_id, sf_type, start_time
+            ),
+        );
     }
 }
