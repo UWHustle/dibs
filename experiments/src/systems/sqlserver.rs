@@ -593,7 +593,7 @@ fn execute_with_retry(stmt: *mut Stmt) {
         match error {
             Error::NoDiagnositics => panic!("Statement execution returned unexpected error"),
             Error::Diagnostics(diagnostic_record) => {
-                if diagnostic_record.native_error != 43102 {
+                if diagnostic_record.native_error != 41302 {
                     panic!("{:?}", diagnostic_record);
                 }
             }
