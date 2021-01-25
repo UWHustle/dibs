@@ -1,3 +1,5 @@
+#![feature(cstring_from_vec_with_nul)]
+
 use dibs::{AcquireError, Dibs, OptimizationLevel, Transaction};
 use std::sync::Arc;
 

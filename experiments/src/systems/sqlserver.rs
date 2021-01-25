@@ -1,75 +1,46 @@
 use crate::benchmarks::tatp;
 use crate::benchmarks::tatp_sp::TATPSPConnection;
+use crate::systems::odbc::{
+    alloc_dbc, alloc_stmt, bind_parameter, close_cursor, connect, disconnect, exec_direct, execute,
+    fetch, free_dbc, free_stmt, get_data, prepare, reset_parameters, Char,
+};
 use crate::Connection;
 use itertools::Itertools;
+use odbc_sys::{Dbc, Env, Stmt};
 use rand::seq::SliceRandom;
 use rand::Rng;
+use std::ffi::CString;
 
-fn exec_direct(conn: &odbc::Connection<odbc::safe::AutocommitOn>, sql: &str) {
-    odbc::Statement::with_parent(&conn)
-        .unwrap()
-        .exec_direct(sql)
-        .unwrap();
-}
-
-fn exec_direct_with_retry<'a>(
-    conn: &'a odbc::Connection<odbc::safe::AutocommitOn>,
-    sql: &'a str,
-) -> odbc::ResultSetState<'a, 'a, odbc::Executed, odbc::safe::AutocommitOn> {
-    loop {
-        match odbc::Statement::with_parent(&conn)
-            .unwrap()
-            .exec_direct(sql)
-        {
-            Ok(result) => {
-                break result;
-            }
-            Err(error) => {
-                println!("{}", error.to_string());
-            }
-        }
-    }
-}
-
-pub fn load_tatp(num_rows: u32) {
+pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
     assert!(num_rows > 0);
     assert_eq!(num_rows % 100, 0);
 
     let mut rng = rand::thread_rng();
 
-    let env = odbc::create_environment_v3().unwrap();
-    let conn = env.connect("DIBS", "SA", "DIBS123!").unwrap();
+    let dbc = alloc_dbc(env);
+    connect(dbc, "DIBS", "SA", "DIBS123!");
 
-    exec_direct(&conn, "USE dibs;");
+    exec_direct(dbc, "USE dibs;");
 
-    exec_direct(&conn, "DROP PROCEDURE IF EXISTS tatp.get_subscriber_data");
-    exec_direct(&conn, "DROP PROCEDURE IF EXISTS tatp.get_new_destination");
-    exec_direct(&conn, "DROP PROCEDURE IF EXISTS tatp.get_access_data");
-    exec_direct(
-        &conn,
-        "DROP PROCEDURE IF EXISTS tatp.update_subscriber_data",
-    );
-    exec_direct(&conn, "DROP PROCEDURE IF EXISTS tatp.update_location");
-    exec_direct(
-        &conn,
-        "DROP PROCEDURE IF EXISTS tatp.insert_call_forwarding",
-    );
-    exec_direct(
-        &conn,
-        "DROP PROCEDURE IF EXISTS tatp.delete_call_forwarding",
-    );
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.get_subscriber_data");
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.get_new_destination");
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.get_access_data");
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.update_subscriber_data");
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.update_location");
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.insert_call_forwarding");
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.delete_call_forwarding");
 
-    exec_direct(&conn, "DROP TABLE IF EXISTS tatp.call_forwarding;");
-    exec_direct(&conn, "DROP TABLE IF EXISTS tatp.special_facility;");
-    exec_direct(&conn, "DROP TABLE IF EXISTS tatp.access_info;");
-    exec_direct(&conn, "DROP TABLE IF EXISTS tatp.subscriber;");
+    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.call_forwarding;");
+    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.special_facility;");
+    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.access_info;");
+    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.subscriber;");
 
-    exec_direct(&conn, "DROP SCHEMA IF EXISTS tatp");
+    exec_direct(dbc, "DROP SCHEMA IF EXISTS tatp");
 
-    exec_direct(&conn, "CREATE SCHEMA tatp");
+    exec_direct(dbc, "CREATE SCHEMA tatp");
 
     exec_direct(
-        &conn,
+        dbc,
         "CREATE TABLE tatp.subscriber (s_id INTEGER NOT NULL,
                     bit_1 TINYINT, bit_2 TINYINT, bit_3 TINYINT, bit_4 TINYINT,
                     bit_5 TINYINT, bit_6 TINYINT, bit_7 TINYINT, bit_8 TINYINT,
@@ -86,7 +57,7 @@ pub fn load_tatp(num_rows: u32) {
     );
 
     exec_direct(
-        &conn,
+        dbc,
         "CREATE TABLE tatp.access_info (s_id INTEGER NOT NULL,
                 ai_type TINYINT NOT NULL,
                 data1 TINYINT, data2 TINYINT, data3 VARCHAR(3), data4 VARCHAR(5),
@@ -96,7 +67,7 @@ pub fn load_tatp(num_rows: u32) {
     );
 
     exec_direct(
-        &conn,
+        dbc,
         "CREATE TABLE tatp.special_facility (s_id INTEGER NOT NULL,
                 sf_type TINYINT NOT NULL,
                 is_active TINYINT, error_cntrl TINYINT,
@@ -107,7 +78,7 @@ pub fn load_tatp(num_rows: u32) {
     );
 
     exec_direct(
-        &conn,
+        dbc,
         "CREATE TABLE tatp.call_forwarding (s_id INTEGER NOT NULL,
                 sf_type TINYINT NOT NULL,
                 start_time TINYINT, end_time TINYINT, numberx VARCHAR(15),
@@ -150,7 +121,7 @@ pub fn load_tatp(num_rows: u32) {
 
     for s_chunk in s_ids.chunks(1000) {
         exec_direct(
-            &conn,
+            dbc,
             &format!(
                 "INSERT INTO tatp.subscriber VALUES {};",
                 s_chunk
@@ -171,7 +142,7 @@ pub fn load_tatp(num_rows: u32) {
 
     for ai_chunk in ai_types.chunks(1000) {
         exec_direct(
-            &conn,
+            dbc,
             &format!(
                 "INSERT INTO tatp.access_info VALUES {};",
                 ai_chunk
@@ -192,7 +163,7 @@ pub fn load_tatp(num_rows: u32) {
 
     for sf_chunk in sf_types.chunks(1000) {
         exec_direct(
-            &conn,
+            dbc,
             &format!(
                 "INSERT INTO tatp.special_facility VALUES {};",
                 sf_chunk
@@ -213,7 +184,7 @@ pub fn load_tatp(num_rows: u32) {
 
     for cf_chunk in cf_start_times.chunks(1000) {
         exec_direct(
-            &conn,
+            dbc,
             &format!(
                 "INSERT INTO tatp.call_forwarding VALUES {}",
                 cf_chunk
@@ -231,27 +202,24 @@ pub fn load_tatp(num_rows: u32) {
         );
     }
 
-    let prepare = |name, params: &[&str], sql| {
+    let create_procedure = |name, params, sql| {
         exec_direct(
-            &conn,
+            dbc,
             &format!(
-                "CREATE PROCEDURE {}
-                ({})
+                "CREATE PROCEDURE {} ({})
                 WITH NATIVE_COMPILATION, SCHEMABINDING, EXECUTE AS OWNER
                 AS BEGIN ATOMIC WITH
                 (TRANSACTION ISOLATION LEVEL = SERIALIZABLE, LANGUAGE = 'english')
-                {}
+                    {}
                 END",
-                name,
-                params.iter().join(", "),
-                sql,
+                name, params, sql,
             ),
-        );
+        )
     };
 
-    prepare(
+    create_procedure(
         "tatp.get_subscriber_data",
-        &["@s_id INT"],
+        "@s_id INT",
         "SELECT
             bit_1, bit_2, bit_3, bit_4, bit_5,
             bit_6, bit_7, bit_8, bit_9, bit_10,
@@ -264,14 +232,9 @@ pub fn load_tatp(num_rows: u32) {
         WHERE s_id = @s_id;",
     );
 
-    prepare(
+    create_procedure(
         "tatp.get_new_destination",
-        &[
-            "@s_id INT",
-            "@sf_type TINYINT",
-            "@start_time TINYINT",
-            "@end_time TINYINT",
-        ],
+        "@s_id INT, @sf_type TINYINT, @start_time TINYINT, @end_time TINYINT",
         "SELECT cf.numberx
         FROM tatp.special_facility AS sf, tatp.call_forwarding AS cf
         WHERE
@@ -284,23 +247,18 @@ pub fn load_tatp(num_rows: u32) {
                 AND @end_time < cf.end_time);",
     );
 
-    prepare(
+    create_procedure(
         "tatp.get_access_data",
-        &["@s_id INT", "@ai_type TINYINT"],
+        "@s_id INT, @ai_type TINYINT",
         "SELECT data1, data2, data3, data4
         FROM tatp.access_info
         WHERE s_id = @s_id
             AND ai_type = @ai_type",
     );
 
-    prepare(
+    create_procedure(
         "tatp.update_subscriber_data",
-        &[
-            "@bit_1 TINYINT",
-            "@s_id INT",
-            "@data_a TINYINT",
-            "@sf_type TINYINT",
-        ],
+        "@bit_1 TINYINT, @s_id INT, @data_a TINYINT, @sf_type TINYINT",
         "UPDATE tatp.subscriber
         SET bit_1 = @bit_1
         WHERE s_id = @s_id;
@@ -311,23 +269,17 @@ pub fn load_tatp(num_rows: u32) {
             AND sf_type = @sf_type;",
     );
 
-    prepare(
+    create_procedure(
         "tatp.update_location",
-        &["@vlr_location BIGINT", "@s_id INT"],
+        "@vlr_location BIGINT, @s_id INT",
         "UPDATE tatp.subscriber
         SET vlr_location = @vlr_location
         WHERE s_id = @s_id;",
     );
 
-    prepare(
+    create_procedure(
         "tatp.insert_call_forwarding",
-        &[
-            "@s_id INT",
-            "@sf_type TINYINT",
-            "@start_time TINYINT",
-            "@end_time TINYINT",
-            "@numberx VARCHAR(15)",
-        ],
+        "@s_id INT, @sf_type TINYINT, @start_time TINYINT, @end_time TINYINT, @numberx VARCHAR(15)",
         "SELECT sf_type
         FROM tatp.special_facility
         WHERE s_id = @s_id;
@@ -336,36 +288,89 @@ pub fn load_tatp(num_rows: u32) {
         VALUES (@s_id, @sf_type, @start_time, @end_time, @numberx);",
     );
 
-    prepare(
+    create_procedure(
         "tatp.delete_call_forwarding",
-        &["@s_id INT", "@sf_type TINYINT", "@start_time TINYINT"],
+        "@s_id INT, @sf_type TINYINT, @start_time TINYINT",
         "DELETE FROM tatp.call_forwarding
         WHERE s_id = @s_id
             AND sf_type = @sf_type
             AND start_time = @start_time;",
     );
+
+    disconnect(dbc);
+    free_dbc(dbc);
 }
 
-pub struct SQLServerTATPConnection<'a> {
-    conn: odbc::Connection<'a, odbc::safe::AutocommitOn>,
-    _env: Box<odbc::Environment<odbc::Version3>>,
+pub struct SQLServerTATPConnection {
+    dbc: *mut Dbc,
+    get_subscriber_data_stmt: *mut Stmt,
+    get_new_destination_stmt: *mut Stmt,
+    get_access_data_stmt: *mut Stmt,
+    update_subscriber_data_stmt: *mut Stmt,
+    update_location_stmt: *mut Stmt,
+    insert_call_forwarding_stmt: *mut Stmt,
+    delete_call_forwarding_stmt: *mut Stmt,
 }
 
-impl<'a> SQLServerTATPConnection<'a> {
-    pub fn new() -> SQLServerTATPConnection<'a> {
-        let env = Box::into_raw(Box::new(odbc::create_environment_v3().unwrap()));
-        let conn = unsafe { &*env }.connect("DIBS", "SA", "DIBS123!").unwrap();
+impl SQLServerTATPConnection {
+    pub fn new(env: *mut Env) -> SQLServerTATPConnection {
+        unsafe {
+            let dbc = alloc_dbc(env);
+            connect(dbc, "DIBS", "SA", "DIBS123!");
 
-        exec_direct(&conn, "USE dibs;");
+            exec_direct(dbc, "USE dibs;");
 
-        SQLServerTATPConnection {
-            conn,
-            _env: unsafe { Box::from_raw(env) },
+            let get_subscriber_data_stmt = alloc_stmt(dbc);
+            prepare(
+                get_subscriber_data_stmt,
+                "{ CALL tatp.get_subscriber_data (?) }",
+            );
+
+            let get_new_destination_stmt = alloc_stmt(dbc);
+            prepare(
+                get_new_destination_stmt,
+                "{ CALL tatp.get_new_destination (?, ?, ?, ?) }",
+            );
+
+            let get_access_data_stmt = alloc_stmt(dbc);
+            prepare(get_access_data_stmt, "{ CALL tatp.get_access_data (?, ?) }");
+
+            let update_subscriber_data_stmt = alloc_stmt(dbc);
+            prepare(
+                update_subscriber_data_stmt,
+                "{ CALL tatp.update_subscriber_data (?, ?, ?, ?) }",
+            );
+
+            let update_location_stmt = alloc_stmt(dbc);
+            prepare(update_location_stmt, "{ CALL tatp.update_location (?, ?) }");
+
+            let insert_call_forwarding_stmt = alloc_stmt(dbc);
+            prepare(
+                insert_call_forwarding_stmt,
+                "{ CALL tatp.insert_call_forwarding (?, ?, ?, ?, ?) }",
+            );
+
+            let delete_call_forwarding_stmt = alloc_stmt(dbc);
+            prepare(
+                delete_call_forwarding_stmt,
+                "{ CALL tatp.delete_call_forwarding (?, ?, ?) }",
+            );
+
+            SQLServerTATPConnection {
+                dbc,
+                get_subscriber_data_stmt,
+                get_new_destination_stmt,
+                get_access_data_stmt,
+                update_subscriber_data_stmt,
+                update_location_stmt,
+                insert_call_forwarding_stmt,
+                delete_call_forwarding_stmt,
+            }
         }
     }
 }
 
-impl Connection for SQLServerTATPConnection<'_> {
+impl Connection for SQLServerTATPConnection {
     fn begin(&mut self) {}
 
     fn commit(&mut self) {}
@@ -375,128 +380,208 @@ impl Connection for SQLServerTATPConnection<'_> {
     fn savepoint(&mut self) {}
 }
 
-impl<'a> TATPSPConnection for SQLServerTATPConnection<'a> {
-    fn get_subscriber_data(&mut self, s_id: u32) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32) {
-        match exec_direct_with_retry(
-            &self.conn,
-            &format!("{{ CALL tatp.get_subscriber_data ({}) }}", s_id),
-        ) {
-            odbc::ResultSetState::Data(mut stmt) => {
-                let mut cursor = stmt.fetch().unwrap().unwrap();
+impl TATPSPConnection for SQLServerTATPConnection {
+    fn get_subscriber_data(&mut self, mut s_id: u32) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32) {
+        println!("get_subscriber_data");
+        unsafe {
+            bind_parameter(self.get_subscriber_data_stmt, 1, &mut s_id);
 
-                let mut bit = [false; 10];
-                for i in 0..10 {
-                    bit[i] = cursor.get_data((i + 1) as u16).unwrap().unwrap();
-                }
+            execute(self.get_subscriber_data_stmt);
 
-                let mut hex = [0; 10];
-                for i in 0..10 {
-                    hex[i] = cursor.get_data((i + 11) as u16).unwrap().unwrap();
-                }
+            fetch(self.get_subscriber_data_stmt);
 
-                let mut byte2 = [0; 10];
-                for i in 0..10 {
-                    byte2[i] = cursor.get_data((i + 21) as u16).unwrap().unwrap();
-                }
-
-                let msc_location = cursor.get_data(31).unwrap().unwrap();
-
-                let vlr_location = cursor.get_data(32).unwrap().unwrap();
-
-                (bit, hex, byte2, msc_location, vlr_location)
+            let mut bit = [false; 10];
+            for i in 0..10 {
+                let mut bit_u8 = 0u8;
+                get_data(self.get_subscriber_data_stmt, i as u16 + 1, &mut bit_u8);
+                bit[i] = bit_u8 == 1;
             }
-            odbc::ResultSetState::NoData(_) => panic!(),
+
+            let mut hex = [0; 10];
+            for i in 0..10 {
+                get_data(self.get_subscriber_data_stmt, i as u16 + 11, &mut hex[i]);
+            }
+
+            let mut byte2 = [0; 10];
+            for i in 0..10 {
+                get_data(self.get_subscriber_data_stmt, i as u16 + 21, &mut byte2[i]);
+            }
+
+            let mut msc_location = 0u32;
+            get_data(self.get_subscriber_data_stmt, 31, &mut msc_location);
+
+            let mut vlr_location = 0u32;
+            get_data(self.get_subscriber_data_stmt, 32, &mut vlr_location);
+
+            close_cursor(self.get_subscriber_data_stmt);
+
+            (bit, hex, byte2, msc_location, vlr_location)
         }
     }
 
     fn get_new_destination(
         &mut self,
-        s_id: u32,
-        sf_type: u8,
-        start_time: u8,
-        end_time: u8,
+        mut s_id: u32,
+        mut sf_type: u8,
+        mut start_time: u8,
+        mut end_time: u8,
     ) -> Vec<String> {
-        match exec_direct_with_retry(
-            &self.conn,
-            &format!(
-                "{{ CALL tatp.get_new_destination ({}, {}, {}, {}) }}",
-                s_id, sf_type, start_time, end_time
-            ),
-        ) {
-            odbc::ResultSetState::Data(mut stmt) => {
-                let mut numberx = vec![];
+        unsafe {
+            bind_parameter(self.get_new_destination_stmt, 1, &mut s_id);
+            bind_parameter(self.get_new_destination_stmt, 2, &mut sf_type);
+            bind_parameter(self.get_new_destination_stmt, 3, &mut start_time);
+            bind_parameter(self.get_new_destination_stmt, 4, &mut end_time);
 
-                while let Some(mut cursor) = stmt.fetch().unwrap() {
-                    numberx.push(cursor.get_data(1).unwrap().unwrap());
-                }
+            execute(self.get_new_destination_stmt);
 
-                numberx
+            let mut numberx = vec![];
+
+            while fetch(self.get_new_destination_stmt) {
+                // TODO: Implement this.
+                let mut numberx_bytes = vec![0u8; 16];
+                let mut numberx_char = Char::new(&mut numberx_bytes);
+                get_data(self.get_new_destination_stmt, 1, &mut numberx_char);
+                numberx.push(
+                    CString::from_vec_with_nul_unchecked(numberx_bytes)
+                        .into_string()
+                        .unwrap(),
+                );
             }
-            odbc::ResultSetState::NoData(_) => panic!(),
+
+            close_cursor(self.get_new_destination_stmt);
+
+            numberx
         }
     }
 
-    fn get_access_data(&mut self, s_id: u32, ai_type: u8) -> Option<(u8, u8, String, String)> {
-        match exec_direct_with_retry(
-            &self.conn,
-            &format!("{{ CALL tatp.get_access_data ({}, {}) }}", s_id, ai_type),
-        ) {
-            odbc::ResultSetState::Data(mut stmt) => stmt.fetch().unwrap().map(|mut cursor| {
-                let data1 = cursor.get_data(1).unwrap().unwrap();
-                let data2 = cursor.get_data(2).unwrap().unwrap();
-                let data3 = cursor.get_data(3).unwrap().unwrap();
-                let data4 = cursor.get_data(4).unwrap().unwrap();
+    fn get_access_data(
+        &mut self,
+        mut s_id: u32,
+        mut ai_type: u8,
+    ) -> Option<(u8, u8, String, String)> {
+        unsafe {
+            bind_parameter(self.get_access_data_stmt, 1, &mut s_id);
+            bind_parameter(self.get_access_data_stmt, 2, &mut ai_type);
 
-                (data1, data2, data3, data4)
-            }),
-            odbc::ResultSetState::NoData(_) => panic!(),
+            execute(self.get_access_data_stmt);
+
+            let result = if fetch(self.get_access_data_stmt) {
+                let mut data1 = 0u8;
+                get_data(self.get_access_data_stmt, 1, &mut data1);
+
+                let mut data2 = 0u8;
+                get_data(self.get_access_data_stmt, 2, &mut data2);
+
+                let mut data3_bytes = vec![0u8; 4];
+                let mut data3_char = Char::new(&mut data3_bytes);
+                get_data(self.get_access_data_stmt, 3, &mut data3_char);
+
+                let mut data4_bytes = vec![0u8; 6];
+                let mut data4_char = Char::new(&mut data4_bytes);
+                get_data(self.get_access_data_stmt, 4, &mut data4_char);
+
+                Some((
+                    data1,
+                    data2,
+                    CString::from_vec_with_nul_unchecked(data3_bytes)
+                        .into_string()
+                        .unwrap(),
+                    CString::from_vec_with_nul_unchecked(data4_bytes)
+                        .into_string()
+                        .unwrap(),
+                ))
+            } else {
+                None
+            };
+
+            close_cursor(self.get_access_data_stmt);
+
+            result
         }
     }
 
-    fn update_subscriber_data(&mut self, bit_1: bool, s_id: u32, data_a: u8, sf_type: u8) {
-        exec_direct_with_retry(
-            &self.conn,
-            &format!(
-                "{{ CALL tatp.update_subscriber_data ({}, {}, {}, {}) }}",
-                bit_1 as u8, s_id, data_a, sf_type
-            ),
-        );
+    fn update_subscriber_data(
+        &mut self,
+        bit_1: bool,
+        mut s_id: u32,
+        mut data_a: u8,
+        mut sf_type: u8,
+    ) {
+        unsafe {
+            let mut bit_1_u8 = bit_1 as u8;
+            bind_parameter(self.update_subscriber_data_stmt, 1, &mut bit_1_u8);
+            bind_parameter(self.update_subscriber_data_stmt, 2, &mut s_id);
+            bind_parameter(self.update_subscriber_data_stmt, 3, &mut data_a);
+            bind_parameter(self.update_subscriber_data_stmt, 4, &mut sf_type);
+
+            execute(self.update_subscriber_data_stmt);
+
+            reset_parameters(self.update_subscriber_data_stmt);
+        }
     }
 
-    fn update_location(&mut self, vlr_location: u32, s_id: u32) {
-        exec_direct_with_retry(
-            &self.conn,
-            &format!(
-                "{{ CALL tatp.update_location ({}, {}) }}",
-                vlr_location, s_id
-            ),
-        );
+    fn update_location(&mut self, mut vlr_location: u32, mut s_id: u32) {
+        unsafe {
+            bind_parameter(self.update_location_stmt, 1, &mut vlr_location);
+            bind_parameter(self.update_location_stmt, 2, &mut s_id);
+
+            execute(self.update_location_stmt);
+
+            reset_parameters(self.update_location_stmt);
+        }
     }
 
     fn insert_call_forwarding(
         &mut self,
-        s_id: u32,
-        sf_type: u8,
-        start_time: u8,
-        end_time: u8,
+        mut s_id: u32,
+        mut sf_type: u8,
+        mut start_time: u8,
+        mut end_time: u8,
         numberx: &str,
     ) {
-        exec_direct_with_retry(
-            &self.conn,
-            &format!(
-                "{{ CALL tatp.insert_call_forwarding ({}, {}, {}, {}, '{}') }}",
-                s_id, sf_type, start_time, end_time, numberx
-            ),
-        );
+        unsafe {
+            bind_parameter(self.insert_call_forwarding_stmt, 1, &mut s_id);
+            bind_parameter(self.insert_call_forwarding_stmt, 2, &mut sf_type);
+            bind_parameter(self.insert_call_forwarding_stmt, 3, &mut start_time);
+            bind_parameter(self.insert_call_forwarding_stmt, 4, &mut end_time);
+
+            let mut numberx_bytes = numberx.as_bytes().to_vec();
+            let mut numberx_char = Char::new(&mut numberx_bytes);
+
+            bind_parameter(self.insert_call_forwarding_stmt, 5, &mut numberx_char);
+
+            execute(self.insert_call_forwarding_stmt);
+
+            reset_parameters(self.insert_call_forwarding_stmt);
+        }
     }
 
-    fn delete_call_forwarding(&mut self, s_id: u32, sf_type: u8, start_time: u8) {
-        exec_direct_with_retry(
-            &self.conn,
-            &format!(
-                "{{ CALL tatp.delete_call_forwarding ({}, {}, {}) }}",
-                s_id, sf_type, start_time
-            ),
-        );
+    fn delete_call_forwarding(&mut self, mut s_id: u32, mut sf_type: u8, mut start_time: u8) {
+        unsafe {
+            bind_parameter(self.delete_call_forwarding_stmt, 1, &mut s_id);
+            bind_parameter(self.delete_call_forwarding_stmt, 2, &mut sf_type);
+            bind_parameter(self.delete_call_forwarding_stmt, 3, &mut start_time);
+
+            execute(self.delete_call_forwarding_stmt);
+
+            reset_parameters(self.delete_call_forwarding_stmt);
+        }
+    }
+}
+
+impl Drop for SQLServerTATPConnection {
+    fn drop(&mut self) {
+        unsafe {
+            free_stmt(self.get_subscriber_data_stmt);
+            free_stmt(self.get_new_destination_stmt);
+            free_stmt(self.get_access_data_stmt);
+            free_stmt(self.update_subscriber_data_stmt);
+            free_stmt(self.update_location_stmt);
+            free_stmt(self.insert_call_forwarding_stmt);
+            free_stmt(self.delete_call_forwarding_stmt);
+
+            disconnect(self.dbc);
+            free_dbc(self.dbc);
+        }
     }
 }
