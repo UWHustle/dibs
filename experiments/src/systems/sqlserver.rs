@@ -3,7 +3,7 @@ use crate::benchmarks::tatp_sp::TATPSPConnection;
 use crate::systems::odbc;
 use crate::systems::odbc::{
     alloc_dbc, alloc_stmt, bind_parameter, connect, disconnect, exec_direct, execute, fetch,
-    free_dbc, free_stmt, get_data, prepare, reset_stmt, Char,
+    free_dbc, free_stmt, get_data, prepare, reset_stmt, Char, Error,
 };
 use crate::Connection;
 use itertools::Itertools;
@@ -388,7 +388,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
         unsafe {
             bind_parameter(self.get_subscriber_data_stmt, 1, &mut s_id).unwrap();
 
-            execute(self.get_subscriber_data_stmt).unwrap();
+            execute_with_retry(self.get_subscriber_data_stmt);
 
             fetch(self.get_subscriber_data_stmt).unwrap();
 
@@ -434,7 +434,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
             bind_parameter(self.get_new_destination_stmt, 3, &mut start_time).unwrap();
             bind_parameter(self.get_new_destination_stmt, 4, &mut end_time).unwrap();
 
-            execute(self.get_new_destination_stmt).unwrap();
+            execute_with_retry(self.get_new_destination_stmt);
 
             let mut numberx = vec![];
 
@@ -465,7 +465,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
             bind_parameter(self.get_access_data_stmt, 1, &mut s_id).unwrap();
             bind_parameter(self.get_access_data_stmt, 2, &mut ai_type).unwrap();
 
-            execute(self.get_access_data_stmt).unwrap();
+            execute_with_retry(self.get_access_data_stmt);
 
             let result = if fetch(self.get_access_data_stmt).unwrap() {
                 let mut data1 = 0u8;
@@ -516,7 +516,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
             bind_parameter(self.update_subscriber_data_stmt, 3, &mut data_a).unwrap();
             bind_parameter(self.update_subscriber_data_stmt, 4, &mut sf_type).unwrap();
 
-            execute(self.update_subscriber_data_stmt).unwrap();
+            execute_with_retry(self.update_subscriber_data_stmt);
 
             reset_stmt(self.update_subscriber_data_stmt).unwrap();
         }
@@ -527,7 +527,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
             bind_parameter(self.update_location_stmt, 1, &mut vlr_location).unwrap();
             bind_parameter(self.update_location_stmt, 2, &mut s_id).unwrap();
 
-            execute(self.update_location_stmt).unwrap();
+            execute_with_retry(self.update_location_stmt);
 
             reset_stmt(self.update_location_stmt).unwrap();
         }
@@ -552,7 +552,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
 
             bind_parameter(self.insert_call_forwarding_stmt, 5, &mut numberx_char).unwrap();
 
-            execute(self.insert_call_forwarding_stmt).unwrap();
+            execute_with_retry(self.insert_call_forwarding_stmt);
 
             reset_stmt(self.insert_call_forwarding_stmt).unwrap();
         }
@@ -564,7 +564,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
             bind_parameter(self.delete_call_forwarding_stmt, 2, &mut sf_type).unwrap();
             bind_parameter(self.delete_call_forwarding_stmt, 3, &mut start_time).unwrap();
 
-            execute(self.delete_call_forwarding_stmt).unwrap();
+            execute_with_retry(self.delete_call_forwarding_stmt);
 
             reset_stmt(self.delete_call_forwarding_stmt).unwrap();
         }
@@ -584,6 +584,19 @@ impl Drop for SQLServerTATPConnection {
 
             disconnect(self.dbc).unwrap();
             free_dbc(self.dbc).unwrap();
+        }
+    }
+}
+
+fn execute_with_retry(stmt: *mut Stmt) {
+    while let Err(error) = unsafe { execute(stmt) } {
+        match error {
+            Error::NoDiagnositics => panic!("Statement execution returned unexpected error"),
+            Error::Diagnostics(diagnostic_record) => {
+                if diagnostic_record.native_error != 43102 {
+                    panic!("{:?}", diagnostic_record);
+                }
+            }
         }
     }
 }

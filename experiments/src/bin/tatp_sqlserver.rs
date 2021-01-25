@@ -17,9 +17,9 @@ fn main() {
 
     let env = unsafe { alloc_env().unwrap() };
 
-    unsafe {
-        systems::sqlserver::load_tatp(env, num_rows).unwrap();
-    }
+    // unsafe {
+    //     systems::sqlserver::load_tatp(env, num_rows).unwrap();
+    // }
 
     {
         let mut workers: Vec<Box<dyn Worker + Send>> = Vec::with_capacity(num_workers);

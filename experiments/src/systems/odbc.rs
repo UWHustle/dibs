@@ -11,8 +11,8 @@ use std::ptr;
 
 #[derive(Debug)]
 pub struct DiagnosticRecord {
-    native_error: i32,
-    message: String,
+    pub native_error: i32,
+    pub message: String,
 }
 
 #[derive(Debug)]
