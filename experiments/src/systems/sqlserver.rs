@@ -1,8 +1,8 @@
 use crate::benchmarks::tatp;
 use crate::benchmarks::tatp_sp::TATPSPConnection;
 use crate::systems::odbc::{
-    alloc_dbc, alloc_stmt, bind_parameter, close_cursor, connect, disconnect, exec_direct, execute,
-    fetch, free_dbc, free_stmt, get_data, prepare, reset_parameters, Char,
+    alloc_dbc, alloc_stmt, bind_parameter, connect, disconnect, exec_direct, execute, fetch,
+    free_dbc, free_stmt, get_data, prepare, reset_stmt, Char,
 };
 use crate::Connection;
 use itertools::Itertools;
@@ -382,7 +382,6 @@ impl Connection for SQLServerTATPConnection {
 
 impl TATPSPConnection for SQLServerTATPConnection {
     fn get_subscriber_data(&mut self, mut s_id: u32) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32) {
-        println!("get_subscriber_data");
         unsafe {
             bind_parameter(self.get_subscriber_data_stmt, 1, &mut s_id);
 
@@ -413,7 +412,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
             let mut vlr_location = 0u32;
             get_data(self.get_subscriber_data_stmt, 32, &mut vlr_location);
 
-            close_cursor(self.get_subscriber_data_stmt);
+            reset_stmt(self.get_subscriber_data_stmt);
 
             (bit, hex, byte2, msc_location, vlr_location)
         }
@@ -448,7 +447,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
                 );
             }
 
-            close_cursor(self.get_new_destination_stmt);
+            reset_stmt(self.get_new_destination_stmt);
 
             numberx
         }
@@ -494,7 +493,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
                 None
             };
 
-            close_cursor(self.get_access_data_stmt);
+            reset_stmt(self.get_access_data_stmt);
 
             result
         }
@@ -516,7 +515,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
 
             execute(self.update_subscriber_data_stmt);
 
-            reset_parameters(self.update_subscriber_data_stmt);
+            reset_stmt(self.update_subscriber_data_stmt);
         }
     }
 
@@ -527,7 +526,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
 
             execute(self.update_location_stmt);
 
-            reset_parameters(self.update_location_stmt);
+            reset_stmt(self.update_location_stmt);
         }
     }
 
@@ -552,7 +551,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
 
             execute(self.insert_call_forwarding_stmt);
 
-            reset_parameters(self.insert_call_forwarding_stmt);
+            reset_stmt(self.insert_call_forwarding_stmt);
         }
     }
 
@@ -564,7 +563,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
 
             execute(self.delete_call_forwarding_stmt);
 
-            reset_parameters(self.delete_call_forwarding_stmt);
+            reset_stmt(self.delete_call_forwarding_stmt);
         }
     }
 }

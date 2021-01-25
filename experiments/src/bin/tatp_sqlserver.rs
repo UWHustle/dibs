@@ -1,9 +1,9 @@
 use clap::{App, Arg};
 use dibs_experiments::benchmarks::tatp_sp::TATPSPGenerator;
-use dibs_experiments::worker::{StandardWorker, Worker};
-use dibs_experiments::{runner, systems};
 use dibs_experiments::systems::odbc::{alloc_env, free_env};
 use dibs_experiments::systems::sqlserver::SQLServerTATPConnection;
+use dibs_experiments::worker::{StandardWorker, Worker};
+use dibs_experiments::{runner, systems};
 use std::str::FromStr;
 
 fn main() {

@@ -1,8 +1,8 @@
 use odbc_sys::{
     AttrOdbcVersion, CDataType, Dbc, Env, EnvironmentAttribute, FreeStmtOption, HandleType, Obj,
-    ParamType, SQLAllocHandle, SQLBindParameter, SQLCloseCursor, SQLConnect, SQLDisconnect,
-    SQLExecDirect, SQLExecute, SQLFetch, SQLFreeHandle, SQLFreeStmt, SQLGetData, SQLPrepare,
-    SQLSetEnvAttr, SqlDataType, SqlReturn, Stmt,
+    ParamType, SQLAllocHandle, SQLBindParameter, SQLConnect, SQLDisconnect, SQLExecDirect,
+    SQLExecute, SQLFetch, SQLFreeHandle, SQLFreeStmt, SQLGetData, SQLPrepare, SQLSetEnvAttr,
+    SqlDataType, SqlReturn, Stmt,
 };
 use std::convert::TryInto;
 use std::os::raw::c_void;
@@ -153,14 +153,8 @@ where
     });
 }
 
-pub unsafe fn reset_parameters(stmt: *mut Stmt) {
-    call_sys("SQLFreeStmt", || {
-        SQLFreeStmt(stmt, FreeStmtOption::ResetParams)
-    });
-}
-
-pub unsafe fn close_cursor(stmt: *mut Stmt) {
-    call_sys("SQLCloseCursor", || SQLCloseCursor(stmt));
+pub unsafe fn reset_stmt(stmt: *mut Stmt) {
+    call_sys("SQLFreeStmt", || SQLFreeStmt(stmt, FreeStmtOption::Close));
 }
 
 pub trait Parameter {
@@ -195,7 +189,7 @@ impl Parameter for u8 {
     }
 
     fn buffer_length(&self) -> isize {
-        0
+        1
     }
 
     fn str_len_or_ind_ptr(&mut self) -> *mut isize {
@@ -213,7 +207,7 @@ impl Parameter for u32 {
     }
 
     fn column_size(&self) -> usize {
-        0
+        10
     }
 
     fn decimal_digits(&self) -> i16 {
@@ -225,7 +219,7 @@ impl Parameter for u32 {
     }
 
     fn buffer_length(&self) -> isize {
-        0
+        4
     }
 
     fn str_len_or_ind_ptr(&mut self) -> *mut isize {
