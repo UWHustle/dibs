@@ -15,10 +15,10 @@ fn main() {
     let num_rows = u32::from_str(matches.value_of("num_rows").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let env = unsafe { alloc_env() };
+    let env = unsafe { alloc_env().unwrap() };
 
     unsafe {
-        systems::sqlserver::load_tatp(env, num_rows);
+        systems::sqlserver::load_tatp(env, num_rows).unwrap();
     }
 
     {
@@ -29,7 +29,7 @@ fn main() {
                 worker_id,
                 None,
                 TATPSPGenerator::new(num_rows),
-                SQLServerTATPConnection::new(env),
+                SQLServerTATPConnection::new(env).unwrap(),
             )));
         }
 
@@ -37,6 +37,6 @@ fn main() {
     }
 
     unsafe {
-        free_env(env);
+        free_env(env).unwrap();
     }
 }

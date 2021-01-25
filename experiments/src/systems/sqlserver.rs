@@ -1,5 +1,6 @@
 use crate::benchmarks::tatp;
 use crate::benchmarks::tatp_sp::TATPSPConnection;
+use crate::systems::odbc;
 use crate::systems::odbc::{
     alloc_dbc, alloc_stmt, bind_parameter, connect, disconnect, exec_direct, execute, fetch,
     free_dbc, free_stmt, get_data, prepare, reset_stmt, Char,
@@ -11,33 +12,33 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 use std::ffi::CString;
 
-pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
+pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) -> odbc::Result<()> {
     assert!(num_rows > 0);
     assert_eq!(num_rows % 100, 0);
 
     let mut rng = rand::thread_rng();
 
-    let dbc = alloc_dbc(env);
-    connect(dbc, "DIBS", "SA", "DIBS123!");
+    let dbc = alloc_dbc(env)?;
+    connect(dbc, "DIBS", "SA", "DIBS123!")?;
 
-    exec_direct(dbc, "USE dibs;");
+    exec_direct(dbc, "USE dibs;")?;
 
-    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.get_subscriber_data");
-    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.get_new_destination");
-    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.get_access_data");
-    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.update_subscriber_data");
-    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.update_location");
-    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.insert_call_forwarding");
-    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.delete_call_forwarding");
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.get_subscriber_data")?;
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.get_new_destination")?;
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.get_access_data")?;
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.update_subscriber_data")?;
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.update_location")?;
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.insert_call_forwarding")?;
+    exec_direct(dbc, "DROP PROCEDURE IF EXISTS tatp.delete_call_forwarding")?;
 
-    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.call_forwarding;");
-    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.special_facility;");
-    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.access_info;");
-    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.subscriber;");
+    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.call_forwarding;")?;
+    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.special_facility;")?;
+    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.access_info;")?;
+    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.subscriber;")?;
 
-    exec_direct(dbc, "DROP SCHEMA IF EXISTS tatp");
+    exec_direct(dbc, "DROP SCHEMA IF EXISTS tatp")?;
 
-    exec_direct(dbc, "CREATE SCHEMA tatp");
+    exec_direct(dbc, "CREATE SCHEMA tatp")?;
 
     exec_direct(
         dbc,
@@ -54,7 +55,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
                     msc_location BIGINT, vlr_location BIGINT,
                     PRIMARY KEY NONCLUSTERED (s_id))
                 WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_ONLY);",
-    );
+    )?;
 
     exec_direct(
         dbc,
@@ -64,7 +65,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
                 PRIMARY KEY NONCLUSTERED (s_id, ai_type),
                 FOREIGN KEY (s_id) REFERENCES tatp.subscriber (s_id))
              WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_ONLY);",
-    );
+    )?;
 
     exec_direct(
         dbc,
@@ -75,7 +76,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
                 PRIMARY KEY NONCLUSTERED (s_id, sf_type),
                 FOREIGN KEY (s_id) REFERENCES tatp.subscriber (s_id))
              WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_ONLY);",
-    );
+    )?;
 
     exec_direct(
         dbc,
@@ -84,7 +85,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
                 start_time TINYINT, end_time TINYINT, numberx VARCHAR(15),
                 PRIMARY KEY NONCLUSTERED (s_id, sf_type, start_time))
              WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_ONLY);",
-    );
+    )?;
 
     let mut s_ids = (1..=num_rows).collect::<Vec<_>>();
     s_ids.shuffle(&mut rng);
@@ -137,7 +138,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
                     ))
                     .join(",")
             ),
-        );
+        )?;
     }
 
     for ai_chunk in ai_types.chunks(1000) {
@@ -158,7 +159,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
                     ))
                     .join(",")
             ),
-        );
+        )?;
     }
 
     for sf_chunk in sf_types.chunks(1000) {
@@ -179,7 +180,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
                     ))
                     .join(",")
             ),
-        );
+        )?;
     }
 
     for cf_chunk in cf_start_times.chunks(1000) {
@@ -199,7 +200,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
                     ))
                     .join(",")
             ),
-        );
+        )?;
     }
 
     let create_procedure = |name, params, sql| {
@@ -230,7 +231,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
             msc_location, vlr_location
         FROM tatp.subscriber
         WHERE s_id = @s_id;",
-    );
+    )?;
 
     create_procedure(
         "tatp.get_new_destination",
@@ -245,7 +246,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
                 AND cf.sf_type = sf.sf_type)
             AND (cf.start_time <= @start_time
                 AND @end_time < cf.end_time);",
-    );
+    )?;
 
     create_procedure(
         "tatp.get_access_data",
@@ -254,7 +255,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
         FROM tatp.access_info
         WHERE s_id = @s_id
             AND ai_type = @ai_type",
-    );
+    )?;
 
     create_procedure(
         "tatp.update_subscriber_data",
@@ -267,7 +268,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
         SET data_a = @data_a
         WHERE s_id = @s_id
             AND sf_type = @sf_type;",
-    );
+    )?;
 
     create_procedure(
         "tatp.update_location",
@@ -275,7 +276,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
         "UPDATE tatp.subscriber
         SET vlr_location = @vlr_location
         WHERE s_id = @s_id;",
-    );
+    )?;
 
     create_procedure(
         "tatp.insert_call_forwarding",
@@ -286,7 +287,7 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
 
         INSERT INTO tatp.call_forwarding
         VALUES (@s_id, @sf_type, @start_time, @end_time, @numberx);",
-    );
+    )?;
 
     create_procedure(
         "tatp.delete_call_forwarding",
@@ -295,10 +296,12 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) {
         WHERE s_id = @s_id
             AND sf_type = @sf_type
             AND start_time = @start_time;",
-    );
+    )?;
 
-    disconnect(dbc);
-    free_dbc(dbc);
+    disconnect(dbc)?;
+    free_dbc(dbc)?;
+
+    Ok(())
 }
 
 pub struct SQLServerTATPConnection {
@@ -313,50 +316,50 @@ pub struct SQLServerTATPConnection {
 }
 
 impl SQLServerTATPConnection {
-    pub fn new(env: *mut Env) -> SQLServerTATPConnection {
+    pub fn new(env: *mut Env) -> odbc::Result<SQLServerTATPConnection> {
         unsafe {
-            let dbc = alloc_dbc(env);
-            connect(dbc, "DIBS", "SA", "DIBS123!");
+            let dbc = alloc_dbc(env)?;
+            connect(dbc, "DIBS", "SA", "DIBS123!")?;
 
-            exec_direct(dbc, "USE dibs;");
+            exec_direct(dbc, "USE dibs;")?;
 
-            let get_subscriber_data_stmt = alloc_stmt(dbc);
+            let get_subscriber_data_stmt = alloc_stmt(dbc)?;
             prepare(
                 get_subscriber_data_stmt,
                 "{ CALL tatp.get_subscriber_data (?) }",
-            );
+            )?;
 
-            let get_new_destination_stmt = alloc_stmt(dbc);
+            let get_new_destination_stmt = alloc_stmt(dbc)?;
             prepare(
                 get_new_destination_stmt,
                 "{ CALL tatp.get_new_destination (?, ?, ?, ?) }",
-            );
+            )?;
 
-            let get_access_data_stmt = alloc_stmt(dbc);
-            prepare(get_access_data_stmt, "{ CALL tatp.get_access_data (?, ?) }");
+            let get_access_data_stmt = alloc_stmt(dbc)?;
+            prepare(get_access_data_stmt, "{ CALL tatp.get_access_data (?, ?) }")?;
 
-            let update_subscriber_data_stmt = alloc_stmt(dbc);
+            let update_subscriber_data_stmt = alloc_stmt(dbc)?;
             prepare(
                 update_subscriber_data_stmt,
                 "{ CALL tatp.update_subscriber_data (?, ?, ?, ?) }",
-            );
+            )?;
 
-            let update_location_stmt = alloc_stmt(dbc);
-            prepare(update_location_stmt, "{ CALL tatp.update_location (?, ?) }");
+            let update_location_stmt = alloc_stmt(dbc)?;
+            prepare(update_location_stmt, "{ CALL tatp.update_location (?, ?) }")?;
 
-            let insert_call_forwarding_stmt = alloc_stmt(dbc);
+            let insert_call_forwarding_stmt = alloc_stmt(dbc)?;
             prepare(
                 insert_call_forwarding_stmt,
                 "{ CALL tatp.insert_call_forwarding (?, ?, ?, ?, ?) }",
-            );
+            )?;
 
-            let delete_call_forwarding_stmt = alloc_stmt(dbc);
+            let delete_call_forwarding_stmt = alloc_stmt(dbc)?;
             prepare(
                 delete_call_forwarding_stmt,
                 "{ CALL tatp.delete_call_forwarding (?, ?, ?) }",
-            );
+            )?;
 
-            SQLServerTATPConnection {
+            Ok(SQLServerTATPConnection {
                 dbc,
                 get_subscriber_data_stmt,
                 get_new_destination_stmt,
@@ -365,7 +368,7 @@ impl SQLServerTATPConnection {
                 update_location_stmt,
                 insert_call_forwarding_stmt,
                 delete_call_forwarding_stmt,
-            }
+            })
         }
     }
 }
@@ -383,36 +386,36 @@ impl Connection for SQLServerTATPConnection {
 impl TATPSPConnection for SQLServerTATPConnection {
     fn get_subscriber_data(&mut self, mut s_id: u32) -> ([bool; 10], [u8; 10], [u8; 10], u32, u32) {
         unsafe {
-            bind_parameter(self.get_subscriber_data_stmt, 1, &mut s_id);
+            bind_parameter(self.get_subscriber_data_stmt, 1, &mut s_id).unwrap();
 
-            execute(self.get_subscriber_data_stmt);
+            execute(self.get_subscriber_data_stmt).unwrap();
 
-            fetch(self.get_subscriber_data_stmt);
+            fetch(self.get_subscriber_data_stmt).unwrap();
 
             let mut bit = [false; 10];
             for i in 0..10 {
                 let mut bit_u8 = 0u8;
-                get_data(self.get_subscriber_data_stmt, i as u16 + 1, &mut bit_u8);
+                get_data(self.get_subscriber_data_stmt, i as u16 + 1, &mut bit_u8).unwrap();
                 bit[i] = bit_u8 == 1;
             }
 
             let mut hex = [0; 10];
             for i in 0..10 {
-                get_data(self.get_subscriber_data_stmt, i as u16 + 11, &mut hex[i]);
+                get_data(self.get_subscriber_data_stmt, i as u16 + 11, &mut hex[i]).unwrap();
             }
 
             let mut byte2 = [0; 10];
             for i in 0..10 {
-                get_data(self.get_subscriber_data_stmt, i as u16 + 21, &mut byte2[i]);
+                get_data(self.get_subscriber_data_stmt, i as u16 + 21, &mut byte2[i]).unwrap();
             }
 
             let mut msc_location = 0u32;
-            get_data(self.get_subscriber_data_stmt, 31, &mut msc_location);
+            get_data(self.get_subscriber_data_stmt, 31, &mut msc_location).unwrap();
 
             let mut vlr_location = 0u32;
-            get_data(self.get_subscriber_data_stmt, 32, &mut vlr_location);
+            get_data(self.get_subscriber_data_stmt, 32, &mut vlr_location).unwrap();
 
-            reset_stmt(self.get_subscriber_data_stmt);
+            reset_stmt(self.get_subscriber_data_stmt).unwrap();
 
             (bit, hex, byte2, msc_location, vlr_location)
         }
@@ -426,20 +429,20 @@ impl TATPSPConnection for SQLServerTATPConnection {
         mut end_time: u8,
     ) -> Vec<String> {
         unsafe {
-            bind_parameter(self.get_new_destination_stmt, 1, &mut s_id);
-            bind_parameter(self.get_new_destination_stmt, 2, &mut sf_type);
-            bind_parameter(self.get_new_destination_stmt, 3, &mut start_time);
-            bind_parameter(self.get_new_destination_stmt, 4, &mut end_time);
+            bind_parameter(self.get_new_destination_stmt, 1, &mut s_id).unwrap();
+            bind_parameter(self.get_new_destination_stmt, 2, &mut sf_type).unwrap();
+            bind_parameter(self.get_new_destination_stmt, 3, &mut start_time).unwrap();
+            bind_parameter(self.get_new_destination_stmt, 4, &mut end_time).unwrap();
 
-            execute(self.get_new_destination_stmt);
+            execute(self.get_new_destination_stmt).unwrap();
 
             let mut numberx = vec![];
 
-            while fetch(self.get_new_destination_stmt) {
+            while fetch(self.get_new_destination_stmt).unwrap() {
                 // TODO: Implement this.
                 let mut numberx_bytes = vec![0u8; 16];
                 let mut numberx_char = Char::new(&mut numberx_bytes);
-                get_data(self.get_new_destination_stmt, 1, &mut numberx_char);
+                get_data(self.get_new_destination_stmt, 1, &mut numberx_char).unwrap();
                 numberx.push(
                     CString::from_vec_with_nul_unchecked(numberx_bytes)
                         .into_string()
@@ -447,7 +450,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
                 );
             }
 
-            reset_stmt(self.get_new_destination_stmt);
+            reset_stmt(self.get_new_destination_stmt).unwrap();
 
             numberx
         }
@@ -459,25 +462,25 @@ impl TATPSPConnection for SQLServerTATPConnection {
         mut ai_type: u8,
     ) -> Option<(u8, u8, String, String)> {
         unsafe {
-            bind_parameter(self.get_access_data_stmt, 1, &mut s_id);
-            bind_parameter(self.get_access_data_stmt, 2, &mut ai_type);
+            bind_parameter(self.get_access_data_stmt, 1, &mut s_id).unwrap();
+            bind_parameter(self.get_access_data_stmt, 2, &mut ai_type).unwrap();
 
-            execute(self.get_access_data_stmt);
+            execute(self.get_access_data_stmt).unwrap();
 
-            let result = if fetch(self.get_access_data_stmt) {
+            let result = if fetch(self.get_access_data_stmt).unwrap() {
                 let mut data1 = 0u8;
-                get_data(self.get_access_data_stmt, 1, &mut data1);
+                get_data(self.get_access_data_stmt, 1, &mut data1).unwrap();
 
                 let mut data2 = 0u8;
-                get_data(self.get_access_data_stmt, 2, &mut data2);
+                get_data(self.get_access_data_stmt, 2, &mut data2).unwrap();
 
                 let mut data3_bytes = vec![0u8; 4];
                 let mut data3_char = Char::new(&mut data3_bytes);
-                get_data(self.get_access_data_stmt, 3, &mut data3_char);
+                get_data(self.get_access_data_stmt, 3, &mut data3_char).unwrap();
 
                 let mut data4_bytes = vec![0u8; 6];
                 let mut data4_char = Char::new(&mut data4_bytes);
-                get_data(self.get_access_data_stmt, 4, &mut data4_char);
+                get_data(self.get_access_data_stmt, 4, &mut data4_char).unwrap();
 
                 Some((
                     data1,
@@ -493,7 +496,7 @@ impl TATPSPConnection for SQLServerTATPConnection {
                 None
             };
 
-            reset_stmt(self.get_access_data_stmt);
+            reset_stmt(self.get_access_data_stmt).unwrap();
 
             result
         }
@@ -508,25 +511,25 @@ impl TATPSPConnection for SQLServerTATPConnection {
     ) {
         unsafe {
             let mut bit_1_u8 = bit_1 as u8;
-            bind_parameter(self.update_subscriber_data_stmt, 1, &mut bit_1_u8);
-            bind_parameter(self.update_subscriber_data_stmt, 2, &mut s_id);
-            bind_parameter(self.update_subscriber_data_stmt, 3, &mut data_a);
-            bind_parameter(self.update_subscriber_data_stmt, 4, &mut sf_type);
+            bind_parameter(self.update_subscriber_data_stmt, 1, &mut bit_1_u8).unwrap();
+            bind_parameter(self.update_subscriber_data_stmt, 2, &mut s_id).unwrap();
+            bind_parameter(self.update_subscriber_data_stmt, 3, &mut data_a).unwrap();
+            bind_parameter(self.update_subscriber_data_stmt, 4, &mut sf_type).unwrap();
 
-            execute(self.update_subscriber_data_stmt);
+            execute(self.update_subscriber_data_stmt).unwrap();
 
-            reset_stmt(self.update_subscriber_data_stmt);
+            reset_stmt(self.update_subscriber_data_stmt).unwrap();
         }
     }
 
     fn update_location(&mut self, mut vlr_location: u32, mut s_id: u32) {
         unsafe {
-            bind_parameter(self.update_location_stmt, 1, &mut vlr_location);
-            bind_parameter(self.update_location_stmt, 2, &mut s_id);
+            bind_parameter(self.update_location_stmt, 1, &mut vlr_location).unwrap();
+            bind_parameter(self.update_location_stmt, 2, &mut s_id).unwrap();
 
-            execute(self.update_location_stmt);
+            execute(self.update_location_stmt).unwrap();
 
-            reset_stmt(self.update_location_stmt);
+            reset_stmt(self.update_location_stmt).unwrap();
         }
     }
 
@@ -539,31 +542,31 @@ impl TATPSPConnection for SQLServerTATPConnection {
         numberx: &str,
     ) {
         unsafe {
-            bind_parameter(self.insert_call_forwarding_stmt, 1, &mut s_id);
-            bind_parameter(self.insert_call_forwarding_stmt, 2, &mut sf_type);
-            bind_parameter(self.insert_call_forwarding_stmt, 3, &mut start_time);
-            bind_parameter(self.insert_call_forwarding_stmt, 4, &mut end_time);
+            bind_parameter(self.insert_call_forwarding_stmt, 1, &mut s_id).unwrap();
+            bind_parameter(self.insert_call_forwarding_stmt, 2, &mut sf_type).unwrap();
+            bind_parameter(self.insert_call_forwarding_stmt, 3, &mut start_time).unwrap();
+            bind_parameter(self.insert_call_forwarding_stmt, 4, &mut end_time).unwrap();
 
             let mut numberx_bytes = numberx.as_bytes().to_vec();
             let mut numberx_char = Char::new(&mut numberx_bytes);
 
-            bind_parameter(self.insert_call_forwarding_stmt, 5, &mut numberx_char);
+            bind_parameter(self.insert_call_forwarding_stmt, 5, &mut numberx_char).unwrap();
 
-            execute(self.insert_call_forwarding_stmt);
+            execute(self.insert_call_forwarding_stmt).unwrap();
 
-            reset_stmt(self.insert_call_forwarding_stmt);
+            reset_stmt(self.insert_call_forwarding_stmt).unwrap();
         }
     }
 
     fn delete_call_forwarding(&mut self, mut s_id: u32, mut sf_type: u8, mut start_time: u8) {
         unsafe {
-            bind_parameter(self.delete_call_forwarding_stmt, 1, &mut s_id);
-            bind_parameter(self.delete_call_forwarding_stmt, 2, &mut sf_type);
-            bind_parameter(self.delete_call_forwarding_stmt, 3, &mut start_time);
+            bind_parameter(self.delete_call_forwarding_stmt, 1, &mut s_id).unwrap();
+            bind_parameter(self.delete_call_forwarding_stmt, 2, &mut sf_type).unwrap();
+            bind_parameter(self.delete_call_forwarding_stmt, 3, &mut start_time).unwrap();
 
-            execute(self.delete_call_forwarding_stmt);
+            execute(self.delete_call_forwarding_stmt).unwrap();
 
-            reset_stmt(self.delete_call_forwarding_stmt);
+            reset_stmt(self.delete_call_forwarding_stmt).unwrap();
         }
     }
 }
@@ -571,16 +574,16 @@ impl TATPSPConnection for SQLServerTATPConnection {
 impl Drop for SQLServerTATPConnection {
     fn drop(&mut self) {
         unsafe {
-            free_stmt(self.get_subscriber_data_stmt);
-            free_stmt(self.get_new_destination_stmt);
-            free_stmt(self.get_access_data_stmt);
-            free_stmt(self.update_subscriber_data_stmt);
-            free_stmt(self.update_location_stmt);
-            free_stmt(self.insert_call_forwarding_stmt);
-            free_stmt(self.delete_call_forwarding_stmt);
+            free_stmt(self.get_subscriber_data_stmt).unwrap();
+            free_stmt(self.get_new_destination_stmt).unwrap();
+            free_stmt(self.get_access_data_stmt).unwrap();
+            free_stmt(self.update_subscriber_data_stmt).unwrap();
+            free_stmt(self.update_location_stmt).unwrap();
+            free_stmt(self.insert_call_forwarding_stmt).unwrap();
+            free_stmt(self.delete_call_forwarding_stmt).unwrap();
 
-            disconnect(self.dbc);
-            free_dbc(self.dbc);
+            disconnect(self.dbc).unwrap();
+            free_dbc(self.dbc).unwrap();
         }
     }
 }

@@ -1,160 +1,237 @@
 use odbc_sys::{
     AttrOdbcVersion, CDataType, Dbc, Env, EnvironmentAttribute, FreeStmtOption, HandleType, Obj,
     ParamType, SQLAllocHandle, SQLBindParameter, SQLConnect, SQLDisconnect, SQLExecDirect,
-    SQLExecute, SQLFetch, SQLFreeHandle, SQLFreeStmt, SQLGetData, SQLPrepare, SQLSetEnvAttr,
-    SqlDataType, SqlReturn, Stmt,
+    SQLExecute, SQLFetch, SQLFreeHandle, SQLFreeStmt, SQLGetData, SQLGetDiagRec, SQLPrepare,
+    SQLSetEnvAttr, SqlDataType, SqlReturn, Stmt,
 };
 use std::convert::TryInto;
+use std::ffi::CString;
 use std::os::raw::c_void;
-use std::{ptr, thread};
+use std::ptr;
 
-fn call_sys<F>(description: &str, mut f: F)
-where
-    F: FnMut() -> SqlReturn,
-{
-    match f() {
-        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => (),
-        SqlReturn(code) => {
-            if !thread::panicking() {
-                panic!("{} returned error code ({})", description, code)
+#[derive(Debug)]
+pub struct DiagnosticRecord {
+    native_error: i32,
+    message: String,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    NoDiagnositics,
+    Diagnostics(DiagnosticRecord),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+unsafe fn get_diag_rec(handle_type: HandleType, handle: *mut Obj) -> DiagnosticRecord {
+    let mut text_length = 0;
+    let mut state = [0; 6];
+    let mut native_error = 0;
+    let mut message_bytes = vec![0; 1024];
+
+    match SQLGetDiagRec(
+        handle_type,
+        handle,
+        1,
+        state.as_mut_ptr(),
+        &mut native_error,
+        message_bytes.as_mut_ptr(),
+        message_bytes.len() as i16,
+        &mut text_length,
+    ) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => {
+            let message = CString::from_vec_with_nul_unchecked(message_bytes)
+                .into_string()
+                .unwrap();
+
+            DiagnosticRecord {
+                native_error,
+                message,
             }
         }
+        SqlReturn(code) => panic!("SQLGetDiagRec returned error code ({})", code),
     }
 }
 
-unsafe fn alloc_handle(handle_type: HandleType, input_handle: *mut Obj) -> *mut Obj {
+unsafe fn alloc_handle(handle_type: HandleType, input_handle: *mut Obj) -> Result<*mut Obj> {
     let mut handle = ptr::null_mut();
-
-    call_sys("SQLAllocHandle", || {
-        SQLAllocHandle(handle_type, input_handle, &mut handle)
-    });
-
-    handle
+    match SQLAllocHandle(handle_type, input_handle, &mut handle) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(handle),
+        _ => Err(Error::NoDiagnositics),
+    }
 }
 
-unsafe fn free_handle(handle_type: HandleType, handle: *mut Obj) {
-    call_sys("SQLFreeHandle", || SQLFreeHandle(handle_type, handle));
+unsafe fn free_handle(handle_type: HandleType, handle: *mut Obj) -> Result<()> {
+    match SQLFreeHandle(handle_type, handle) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(()),
+        _ => Err(Error::Diagnostics(get_diag_rec(handle_type, handle))),
+    }
 }
 
-pub unsafe fn alloc_env() -> *mut Env {
-    let env = alloc_handle(HandleType::Env, ptr::null_mut()) as *mut Env;
+pub unsafe fn alloc_env() -> Result<*mut Env> {
+    let env = alloc_handle(HandleType::Env, ptr::null_mut())? as *mut Env;
 
-    call_sys("SQLSetEnvAttr", || {
-        SQLSetEnvAttr(
-            env,
-            EnvironmentAttribute::OdbcVersion,
-            AttrOdbcVersion::Odbc3.into(),
-            0,
-        )
-    });
-
-    env
+    match SQLSetEnvAttr(
+        env,
+        EnvironmentAttribute::OdbcVersion,
+        AttrOdbcVersion::Odbc3.into(),
+        0,
+    ) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(env),
+        _ => Err(Error::Diagnostics(get_diag_rec(
+            HandleType::Env,
+            env as *mut Obj,
+        ))),
+    }
 }
 
-pub unsafe fn free_env(env: *mut Env) {
-    free_handle(HandleType::Env, env as *mut Obj);
+pub unsafe fn free_env(env: *mut Env) -> Result<()> {
+    free_handle(HandleType::Env, env as *mut Obj)
 }
 
-pub unsafe fn alloc_dbc(env: *mut Env) -> *mut Dbc {
-    alloc_handle(HandleType::Dbc, env as *mut Obj) as *mut Dbc
+pub unsafe fn alloc_dbc(env: *mut Env) -> Result<*mut Dbc> {
+    Ok(alloc_handle(HandleType::Dbc, env as *mut Obj)? as *mut Dbc)
 }
 
-pub unsafe fn free_dbc(dbc: *mut Dbc) {
+pub unsafe fn free_dbc(dbc: *mut Dbc) -> Result<()> {
     free_handle(HandleType::Dbc, dbc as *mut Obj)
 }
 
-pub unsafe fn connect(dbc: *mut Dbc, dsn: &str, user: &str, pwd: &str) {
-    call_sys("SQLConnect", || {
-        SQLConnect(
-            dbc,
-            dsn.as_ptr(),
-            dsn.len().try_into().unwrap(),
-            user.as_ptr(),
-            user.len().try_into().unwrap(),
-            pwd.as_ptr(),
-            pwd.len().try_into().unwrap(),
-        )
-    });
-}
-
-pub unsafe fn disconnect(dbc: *mut Dbc) {
-    call_sys("SQLDisconnect", || SQLDisconnect(dbc));
-}
-
-pub unsafe fn exec_direct(dbc: *mut Dbc, sql: &str) {
-    let stmt = alloc_stmt(dbc);
-
-    call_sys("SQLExecDirect", || {
-        SQLExecDirect(stmt, sql.as_ptr(), sql.len().try_into().unwrap())
-    });
-
-    free_stmt(stmt);
-}
-
-pub unsafe fn alloc_stmt(dbc: *mut Dbc) -> *mut Stmt {
-    alloc_handle(HandleType::Stmt, dbc as *mut Obj) as *mut Stmt
-}
-
-pub unsafe fn free_stmt(stmt: *mut Stmt) {
-    free_handle(HandleType::Stmt, stmt as *mut Obj);
-}
-
-pub unsafe fn prepare(stmt: *mut Stmt, sql: &str) {
-    call_sys("SQLPrepare", || {
-        SQLPrepare(stmt, sql.as_ptr(), sql.len().try_into().unwrap())
-    });
-}
-
-pub unsafe fn bind_parameter<T>(stmt: *mut Stmt, parameter_number: u16, value: &mut T)
-where
-    T: Parameter,
-{
-    call_sys("SQLBindParameter", || {
-        SQLBindParameter(
-            stmt,
-            parameter_number,
-            ParamType::Input,
-            value.value_type(),
-            value.parameter_type(),
-            value.column_size(),
-            value.decimal_digits(),
-            value.parameter_value_ptr(),
-            value.buffer_length(),
-            value.str_len_or_ind_ptr(),
-        )
-    });
-}
-
-pub unsafe fn execute(stmt: *mut Stmt) {
-    call_sys("SQLExecute", || SQLExecute(stmt));
-}
-
-pub unsafe fn fetch(stmt: *mut Stmt) -> bool {
-    match SQLFetch(stmt) {
-        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => true,
-        SqlReturn::NO_DATA => false,
-        SqlReturn(code) => panic!("SQLFetch returned error code ({})", code),
+pub unsafe fn connect(dbc: *mut Dbc, dsn: &str, user: &str, pwd: &str) -> Result<()> {
+    match SQLConnect(
+        dbc,
+        dsn.as_ptr(),
+        dsn.len().try_into().unwrap(),
+        user.as_ptr(),
+        user.len().try_into().unwrap(),
+        pwd.as_ptr(),
+        pwd.len().try_into().unwrap(),
+    ) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(()),
+        _ => Err(Error::Diagnostics(get_diag_rec(
+            HandleType::Dbc,
+            dbc as *mut Obj,
+        ))),
     }
 }
 
-pub unsafe fn get_data<T>(stmt: *mut Stmt, col_or_param_num: u16, target: &mut T)
+pub unsafe fn disconnect(dbc: *mut Dbc) -> Result<()> {
+    match SQLDisconnect(dbc) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(()),
+        _ => Err(Error::Diagnostics(get_diag_rec(
+            HandleType::Dbc,
+            dbc as *mut Obj,
+        ))),
+    }
+}
+
+pub unsafe fn exec_direct(dbc: *mut Dbc, sql: &str) -> Result<()> {
+    let stmt = alloc_stmt(dbc)?;
+
+    match SQLExecDirect(stmt, sql.as_ptr(), sql.len().try_into().unwrap()) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(()),
+        _ => Err(Error::Diagnostics(get_diag_rec(
+            HandleType::Stmt,
+            stmt as *mut Obj,
+        ))),
+    }?;
+
+    free_stmt(stmt)?;
+
+    Ok(())
+}
+
+pub unsafe fn alloc_stmt(dbc: *mut Dbc) -> Result<*mut Stmt> {
+    Ok(alloc_handle(HandleType::Stmt, dbc as *mut Obj)? as *mut Stmt)
+}
+
+pub unsafe fn free_stmt(stmt: *mut Stmt) -> Result<()> {
+    free_handle(HandleType::Stmt, stmt as *mut Obj)
+}
+
+pub unsafe fn prepare(stmt: *mut Stmt, sql: &str) -> Result<()> {
+    match SQLPrepare(stmt, sql.as_ptr(), sql.len().try_into().unwrap()) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(()),
+        _ => Err(Error::Diagnostics(get_diag_rec(
+            HandleType::Stmt,
+            stmt as *mut Obj,
+        ))),
+    }
+}
+
+pub unsafe fn bind_parameter<T>(stmt: *mut Stmt, parameter_number: u16, value: &mut T) -> Result<()>
+where
+    T: Parameter,
+{
+    match SQLBindParameter(
+        stmt,
+        parameter_number,
+        ParamType::Input,
+        value.value_type(),
+        value.parameter_type(),
+        value.column_size(),
+        value.decimal_digits(),
+        value.parameter_value_ptr(),
+        value.buffer_length(),
+        value.str_len_or_ind_ptr(),
+    ) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(()),
+        _ => Err(Error::Diagnostics(get_diag_rec(
+            HandleType::Stmt,
+            stmt as *mut Obj,
+        ))),
+    }
+}
+
+pub unsafe fn execute(stmt: *mut Stmt) -> Result<()> {
+    match SQLExecute(stmt) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(()),
+        _ => Err(Error::Diagnostics(get_diag_rec(
+            HandleType::Stmt,
+            stmt as *mut Obj,
+        ))),
+    }
+}
+
+pub unsafe fn fetch(stmt: *mut Stmt) -> Result<bool> {
+    match SQLFetch(stmt) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(true),
+        SqlReturn::NO_DATA => Ok(false),
+        _ => Err(Error::Diagnostics(get_diag_rec(
+            HandleType::Stmt,
+            stmt as *mut Obj,
+        ))),
+    }
+}
+
+pub unsafe fn get_data<T>(stmt: *mut Stmt, col_or_param_num: u16, target: &mut T) -> Result<()>
 where
     T: Parameter + ?Sized,
 {
-    call_sys("SQLGetData", || {
-        SQLGetData(
-            stmt,
-            col_or_param_num,
-            target.value_type(),
-            target.parameter_value_ptr(),
-            target.buffer_length(),
-            target.str_len_or_ind_ptr(),
-        )
-    });
+    match SQLGetData(
+        stmt,
+        col_or_param_num,
+        target.value_type(),
+        target.parameter_value_ptr(),
+        target.buffer_length(),
+        target.str_len_or_ind_ptr(),
+    ) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(()),
+        _ => Err(Error::Diagnostics(get_diag_rec(
+            HandleType::Stmt,
+            stmt as *mut Obj,
+        ))),
+    }
 }
 
-pub unsafe fn reset_stmt(stmt: *mut Stmt) {
-    call_sys("SQLFreeStmt", || SQLFreeStmt(stmt, FreeStmtOption::Close));
+pub unsafe fn reset_stmt(stmt: *mut Stmt) -> Result<()> {
+    match SQLFreeStmt(stmt, FreeStmtOption::Close) {
+        SqlReturn::SUCCESS | SqlReturn::SUCCESS_WITH_INFO => Ok(()),
+        _ => Err(Error::Diagnostics(get_diag_rec(
+            HandleType::Stmt,
+            stmt as *mut Obj,
+        ))),
+    }
 }
 
 pub trait Parameter {
