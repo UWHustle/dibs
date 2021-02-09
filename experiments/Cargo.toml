@@ -18,6 +18,8 @@ arrow = "2.0"
 rusqlite = "0.24"
 mysql = "20.0"
 odbc-sys = "0.17"
+chrono = "0.4"
+bit-vec = "0.6"
 
 [build-dependencies]
 cc = "1.0"

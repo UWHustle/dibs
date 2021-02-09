@@ -1,3 +1,5 @@
+mod seats;
+
 use crate::benchmarks::scan::ScanConnection;
 use crate::benchmarks::tatp::TATPConnection;
 use crate::benchmarks::ycsb::YCSBConnection;
@@ -418,7 +420,7 @@ impl TATPConnection for ArrowTATPConnection {
                                 String::from_utf8(
                                     self.db.call_forwarding.numberx.value(*cf_row).to_vec(),
                                 )
-                                .unwrap(),
+                                    .unwrap(),
                             );
                         }
                     }
