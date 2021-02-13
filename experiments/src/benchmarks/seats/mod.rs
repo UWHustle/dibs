@@ -3,7 +3,9 @@ use std::fmt::Debug;
 
 #[derive(Debug)]
 pub enum Error {
-    UserAbort,
+    SeatReserved { f_id: i64, seat: i64 },
+    NonexistentReservation { c_id: i64, f_id: i64 },
+    InvalidOperation,
 }
 
 pub trait SEATSConnection {
@@ -28,7 +30,7 @@ pub trait SEATSConnection {
         distance: i64,
     ) -> Result<(), Error>;
 
-    fn find_open_seats(&self, flight_id: i64) -> Result<(), Error>;
+    fn find_open_seats(&self, f_id: i64) -> Result<Vec<(i64, i64, f64)>, Error>;
 
     fn new_reservation(
         &self,
@@ -53,11 +55,11 @@ pub trait SEATSConnection {
 
     fn update_reservation(
         &self,
-        reservation_id: i64,
-        flight_id: i64,
-        customer_id: i64,
-        seat_num: i64,
-        attr_idx: i64,
-        attr_val: i64,
+        r_id: i64,
+        c_id: i64,
+        f_id: i64,
+        seat: i64,
+        iattr_index: usize,
+        iattr: i64,
     ) -> Result<(), Error>;
 }
