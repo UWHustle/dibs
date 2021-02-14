@@ -44,7 +44,7 @@ fn main() {
     ))];
 
     for worker_id in 1..num_workers {
-        let generator: ReadOnlyGenerator<TATPGenerator, SQLiteTATPConnection> =
+        let generator: ReadOnlyGenerator<TATPGenerator> =
             ReadOnlyGenerator::new(TATPGenerator::new(num_rows), sender.clone());
 
         workers.push(Box::new(StandardWorker::new(

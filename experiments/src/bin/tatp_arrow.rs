@@ -3,7 +3,7 @@ use dibs::OptimizationLevel;
 use dibs_experiments::benchmarks::tatp;
 use dibs_experiments::benchmarks::tatp::TATPGenerator;
 use dibs_experiments::runner;
-use dibs_experiments::systems::arrow::{ArrowTATPConnection, ArrowTATPDatabase};
+use dibs_experiments::systems::arrow::tatp::{ArrowTATPConnection, ArrowTATPDatabase};
 use dibs_experiments::worker::{StandardWorker, Worker};
 use std::str::FromStr;
 use std::sync::Arc;

@@ -3,7 +3,7 @@ use dibs::OptimizationLevel;
 use dibs_experiments::benchmarks::scan;
 use dibs_experiments::benchmarks::scan::ScanGenerator;
 use dibs_experiments::runner;
-use dibs_experiments::systems::arrow::{ArrowScanConnection, ArrowScanDatabase};
+use dibs_experiments::systems::arrow::scan::{ArrowScanConnection, ArrowScanDatabase};
 use dibs_experiments::worker::{StandardWorker, Worker};
 use std::str::FromStr;
 use std::sync::Arc;

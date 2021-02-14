@@ -32,7 +32,7 @@ where
     ))];
 
     for worker_id in 1..num_workers {
-        let generator: ReadOnlyGenerator<YCSBGenerator<D>, SQLiteYCSBConnection> =
+        let generator: ReadOnlyGenerator<YCSBGenerator<D>> =
             ReadOnlyGenerator::new(make_generator(), sender.clone());
 
         workers.push(Box::new(StandardWorker::new(

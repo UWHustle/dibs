@@ -2,7 +2,7 @@ use clap::{App, Arg};
 use dibs::OptimizationLevel;
 use dibs_experiments::benchmarks::ycsb;
 use dibs_experiments::runner;
-use dibs_experiments::systems::arrow::{ArrowYCSBConnection, ArrowYCSBDatabase};
+use dibs_experiments::systems::arrow::ycsb::{ArrowYCSBConnection, ArrowYCSBDatabase};
 use dibs_experiments::worker::{StandardWorker, Worker};
 use std::str::FromStr;
 use std::sync::Arc;

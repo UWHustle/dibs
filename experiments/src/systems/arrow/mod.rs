@@ -1,10 +1,10 @@
 use arrow::array::{BooleanArray, Float64Array, Int64Array, PrimitiveArrayOps};
 use std::convert::TryInto;
 
-mod scan;
-mod seats;
-mod tatp;
-mod ycsb;
+pub mod scan;
+pub mod seats;
+pub mod tatp;
+pub mod ycsb;
 
 pub struct BooleanArrayMut(BooleanArray);
 
