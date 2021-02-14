@@ -1,12 +1,15 @@
 use crate::benchmarks::seats;
-use crate::benchmarks::seats::SEATSConnection;
+use crate::benchmarks::seats::{
+    AirportInfo, DeleteReservationVariant, SEATSConnection, UpdateCustomerVariant,
+};
 use crate::systems::arrow::{BooleanArrayMut, Float64ArrayMut, Int64ArrayMut};
 use arrow::array::{
     Array, ArrayBuilder, Float64Array, Float64Builder, Int64Array, Int64Builder, PrimitiveArrayOps,
     StringArray, StringBuilder,
 };
+
 use arrow::csv;
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Field, Float64Type, Int64Type, Schema};
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
@@ -19,6 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 const BLOCK_CAPACITY: usize = 1024;
 const NUM_PARTITIONS: usize = 1024;
 
+#[derive(Debug)]
 enum Error {
     DuplicateKey,
     NonexistentKey,
@@ -30,6 +34,7 @@ struct Country {
     name: StringArray,
     code_2: StringArray,
     code_3: StringArray,
+    pk_index: HashMap<i64, usize>,
 }
 
 impl Country {
@@ -65,11 +70,20 @@ impl Country {
                 .unwrap();
         }
 
+        let id = id_builder.finish();
+
+        let pk_index = id
+            .iter()
+            .enumerate()
+            .map(|(row_index, id_v)| (id_v.unwrap(), row_index))
+            .collect();
+
         Country {
-            id: id_builder.finish(),
+            id,
             name: name_builder.finish(),
             code_2: code_2_builder.finish(),
             code_3: code_3_builder.finish(),
+            pk_index,
         }
     }
 }
@@ -87,6 +101,7 @@ struct Airport {
     gmt_offset: Float64Array,
     wac: Int64Array,
     iattrs: Vec<Int64Array>,
+    pk_index: HashMap<i64, usize>,
 }
 
 impl Airport {
@@ -163,8 +178,16 @@ impl Airport {
             }
         }
 
+        let id = id_builder.finish();
+
+        let pk_index = id
+            .iter()
+            .enumerate()
+            .map(|(row_index, id_v)| (id_v.unwrap(), row_index))
+            .collect();
+
         Airport {
-            id: id_builder.finish(),
+            id,
             code: code_builder.finish(),
             name: name_builder.finish(),
             city: city_builder.finish(),
@@ -175,7 +198,20 @@ impl Airport {
             gmt_offset: gmt_offset_builder.finish(),
             wac: wac_builder.finish(),
             iattrs: iattr_builders.into_iter().map(|mut b| b.finish()).collect(),
+            pk_index,
         }
+    }
+
+    fn get_airport_info(&self, id: i64) -> (&str, &str, &str, i64) {
+        let row_index = self.pk_index[&id];
+        assert_eq!(self.id.value(row_index), id);
+
+        (
+            self.code.value(row_index),
+            self.name.value(row_index),
+            self.city.value(row_index),
+            self.co_id.value(row_index),
+        )
     }
 }
 
@@ -184,6 +220,7 @@ struct AirportDistance {
     id0: Int64Array,
     id1: Int64Array,
     distance: Float64Array,
+    pk_index: HashMap<i64, HashMap<i64, usize>>,
 }
 
 impl AirportDistance {
@@ -214,11 +251,50 @@ impl AirportDistance {
                 .unwrap();
         }
 
-        AirportDistance {
-            id0: id0_builder.finish(),
-            id1: id1_builder.finish(),
-            distance: distance_builder.finish(),
+        let id0 = id0_builder.finish();
+        let id1 = id1_builder.finish();
+
+        let mut pk_index = HashMap::new();
+
+        for (row_index, (id0_v, id1_v)) in id0.iter().zip(id1.iter()).enumerate() {
+            pk_index
+                .entry(id0_v.unwrap())
+                .or_insert(HashMap::new())
+                .insert(id1_v.unwrap(), row_index);
         }
+
+        AirportDistance {
+            id0,
+            id1,
+            distance: distance_builder.finish(),
+            pk_index,
+        }
+    }
+
+    fn get_nearby_airports(&self, id0: i64, distance: f64) -> Vec<i64> {
+        let mut connected_airports = self
+            .pk_index
+            .get(&id0)
+            .map(|m_id1| {
+                m_id1
+                    .iter()
+                    .filter_map(|(&id1, &row_index)| {
+                        assert_eq!(self.id0.value(row_index), id0);
+                        assert_eq!(self.id1.value(row_index), id1);
+
+                        let other_distance = self.distance.value(row_index);
+                        if other_distance <= distance {
+                            Some((id1, distance))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or(vec![]);
+
+        connected_airports.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        connected_airports.iter().map(|&(id1, _)| id1).collect()
     }
 }
 
@@ -231,6 +307,7 @@ struct Airline {
     name: StringArray,
     co_id: Int64Array,
     iattrs: Vec<Int64Array>,
+    pk_index: HashMap<i64, usize>,
 }
 
 impl Airline {
@@ -293,6 +370,14 @@ impl Airline {
             }
         }
 
+        let id = id_builder.finish();
+
+        let pk_index = id
+            .iter()
+            .enumerate()
+            .map(|(row_index, id_v)| (id_v.unwrap(), row_index))
+            .collect();
+
         Airline {
             id: id_builder.finish(),
             iata_code: iata_code_builder.finish(),
@@ -301,7 +386,15 @@ impl Airline {
             name: name_builder.finish(),
             co_id: co_id_builder.finish(),
             iattrs: iattr_builders.into_iter().map(|mut b| b.finish()).collect(),
+            pk_index,
         }
+    }
+
+    fn get_airline_name(&self, id: i64) -> &str {
+        let row_index = self.pk_index[&id];
+        assert_eq!(self.id.value(row_index), id);
+
+        self.name.value(row_index)
     }
 }
 
@@ -611,14 +704,15 @@ impl FrequentFlyer {
         }
     }
 
-    fn set_iattrs_update_customer(&self, c_id: i64, al_id: i64, iattr00: i64, iattr01: i64) {
-        let row_index = self.pk_index[&c_id][&al_id];
-        assert_eq!(self.c_id.value(row_index), c_id);
-        assert_eq!(self.al_id.value(row_index), al_id);
+    fn set_iattrs_update_customer(&self, c_id: i64, iattr00: i64, iattr01: i64) {
+        for (&al_id, &row_index) in &self.pk_index[&c_id] {
+            assert_eq!(self.c_id.value(row_index), c_id);
+            assert_eq!(self.al_id.value(row_index), al_id);
 
-        unsafe {
-            self.iattrs[0].set(row_index, iattr00);
-            self.iattrs[1].set(row_index, iattr01);
+            unsafe {
+                self.iattrs[0].set(row_index, iattr00);
+                self.iattrs[1].set(row_index, iattr01);
+            }
         }
     }
 }
@@ -771,6 +865,17 @@ impl Flight {
         self.seats_left.0.value(row_index)
     }
 
+    fn get_airline_and_seats_left(&self, id: i64) -> Option<(i64, i64)> {
+        self.pk_index.get(&id).map(|&row_index| {
+            assert_eq!(self.id.value(row_index), id);
+
+            (
+                self.al_id.value(row_index),
+                self.seats_left.0.value(row_index),
+            )
+        })
+    }
+
     fn get_price(&self, id: i64) -> f64 {
         let row_index = self.pk_index[&id];
         assert_eq!(self.id.value(row_index), id);
@@ -786,7 +891,6 @@ impl Flight {
         depart_ap_id: i64,
         depart_time_a: i64,
         depart_time_b: i64,
-        al_id: i64,
         arrive_ap_id: &HashSet<i64>,
     ) -> Vec<FlightInfo> {
         self.depart_time_index
@@ -801,12 +905,11 @@ impl Flight {
                 );
 
                 if self.depart_ap_id.value(row_index) == depart_ap_id
-                    && self.al_id.value(row_index) == al_id
                     && arrive_ap_id.contains(&self.arrive_ap_id.value(row_index))
                 {
                     Some(FlightInfo {
                         id: self.id.value(row_index),
-                        al_id,
+                        al_id: self.al_id.value(row_index),
                         seats_left: self.seats_left.0.value(row_index),
                         depart_ap_id,
                         depart_time,
@@ -913,6 +1016,25 @@ impl ReservationPartition {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Returns (r_id, price)
+    fn get_reservation_info(&self, c_id: i64, f_id: i64) -> Option<(i64, f64)> {
+        self.pk_index
+            .get(&f_id)
+            .and_then(|m_c_id| m_c_id.get(&c_id))
+            .and_then(|m_id| {
+                let (&id, &(block_index, row_index)) = m_id.iter().next()?;
+
+                let block = &self.blocks[block_index];
+
+                assert!(block.valid.0.value(row_index));
+                assert_eq!(block.id.0.value(row_index), id);
+                assert_eq!(block.c_id.0.value(row_index), c_id);
+                assert_eq!(block.f_id.0.value(row_index), f_id);
+
+                Some((id, block.price.0.value(row_index)))
+            })
     }
 
     fn update_reservation(
@@ -1032,7 +1154,57 @@ impl Reservation {
     where
         P: AsRef<Path>,
     {
-        unimplemented!()
+        let partitions = (0..NUM_PARTITIONS)
+            .map(|_| Mutex::new(ReservationPartition::new()))
+            .collect();
+
+        let reservation = Reservation { partitions };
+
+        let mut fields = vec![
+            Field::new("R_ID", DataType::Int64, false),
+            Field::new("R_C_ID", DataType::Int64, false),
+            Field::new("R_F_ID", DataType::Int64, false),
+            Field::new("R_SEAT", DataType::Int64, false),
+            Field::new("R_PRICE", DataType::Float64, false),
+        ];
+
+        for i in 0..9 {
+            fields.push(Field::new(
+                &format!("R_IATTR0{}", i % 10),
+                DataType::Int64,
+                true,
+            ));
+        }
+
+        let schema = Schema::new(fields);
+
+        let file = File::open(path).unwrap();
+        let csv = csv::Reader::new(file, Arc::new(schema), true, None, BLOCK_CAPACITY, None);
+
+        for result in csv {
+            let batch = result.unwrap();
+
+            for i in 0..BLOCK_CAPACITY {
+                let id = arrow::array::as_primitive_array::<Int64Type>(batch.column(0)).value(i);
+                let c_id = arrow::array::as_primitive_array::<Int64Type>(batch.column(1)).value(i);
+                let f_id = arrow::array::as_primitive_array::<Int64Type>(batch.column(2)).value(i);
+                let seat = arrow::array::as_primitive_array::<Int64Type>(batch.column(3)).value(i);
+                let price =
+                    arrow::array::as_primitive_array::<Float64Type>(batch.column(4)).value(i);
+
+                let iattrs = (5..14)
+                    .map(|j| {
+                        arrow::array::as_primitive_array::<Int64Type>(batch.column(j)).value(i)
+                    })
+                    .collect::<Vec<_>>();
+
+                reservation
+                    .insert(id, c_id, f_id, seat, price, &iattrs)
+                    .unwrap();
+            }
+        }
+
+        reservation
     }
 
     fn seat_is_reserved(&self, f_id: i64, seat: i64) -> bool {
@@ -1048,6 +1220,10 @@ impl Reservation {
         self.get_partition(f_id).get_reserved_seats_on_flight(f_id)
     }
 
+    fn get_reservation_info(&self, c_id: i64, f_id: i64) -> Option<(i64, f64)> {
+        self.get_partition(f_id).get_reservation_info(c_id, f_id)
+    }
+
     fn update_reservation(
         &self,
         id: i64,
@@ -1059,6 +1235,23 @@ impl Reservation {
     ) -> Result<(), Error> {
         self.get_partition(f_id)
             .update_reservation(id, c_id, f_id, seat, iattr_index, iattr)
+    }
+
+    fn insert(
+        &self,
+        id: i64,
+        c_id: i64,
+        f_id: i64,
+        seat: i64,
+        price: f64,
+        iattrs: &[i64],
+    ) -> Result<(), Error> {
+        self.get_partition(f_id)
+            .insert(id, c_id, f_id, seat, price, iattrs)
+    }
+
+    fn remove(&self, id: i64, c_id: i64, f_id: i64) -> Result<(), Error> {
+        self.get_partition(f_id).remove(id, c_id, f_id)
     }
 
     fn get_partition(&self, f_id: i64) -> MutexGuard<ReservationPartition> {
@@ -1176,30 +1369,115 @@ pub struct Database {
 }
 
 impl SEATSConnection for Database {
-    fn delete_reservation<S1, S2>(
+    fn delete_reservation(
         &self,
-        flight_id: i64,
-        customer_id: i64,
-        customer_id_string: Option<S1>,
-        frequent_flyer_customer_id_string: Option<S2>,
-        frequent_flyer_airline_id: i64,
-    ) -> Result<(), seats::Error>
-    where
-        S1: AsRef<str> + Debug,
-        S2: AsRef<str> + Debug,
-    {
-        unimplemented!()
+        variant: DeleteReservationVariant,
+        f_id: i64,
+    ) -> Result<(), seats::Error> {
+        let (c_id, ff_al_id) = match variant {
+            DeleteReservationVariant::CustomerId(c_id) => (c_id, None),
+            DeleteReservationVariant::CustomerIdString(c_id_str) => {
+                let c_id = self.customer.get_customer_id_from_str(c_id_str).ok_or(
+                    seats::Error::UserAbort(format!("customer {} not found", c_id_str)),
+                )?;
+
+                (c_id, None)
+            }
+            DeleteReservationVariant::FrequentFlyer(ff_c_id_str) => {
+                let c_id = self.customer.get_customer_id_from_str(ff_c_id_str).ok_or(
+                    seats::Error::UserAbort(format!("customer {} not found", ff_c_id_str)),
+                )?;
+
+                let ff_al_id = self.frequent_flyer.get_airline_ids(c_id).first().copied();
+
+                (c_id, ff_al_id)
+            }
+        };
+
+        let c_iattr00 =
+            self.customer
+                .get_customer_attribute(c_id)
+                .ok_or(seats::Error::UserAbort(format!(
+                    "customer {} not found",
+                    c_id
+                )))?;
+
+        let (r_id, price) =
+            self.reservation
+                .get_reservation_info(c_id, f_id)
+                .ok_or(seats::Error::UserAbort(format!(
+                    "no reservation for customer {} on flight {}",
+                    c_id, f_id
+                )))?;
+
+        self.reservation
+            .remove(r_id, c_id, f_id)
+            .map_err(|_| seats::Error::InvalidOperation)?;
+
+        self.flight.increment_seats_left(f_id);
+
+        self.customer
+            .update_customer_delete_reservation(c_id, -price, c_iattr00);
+
+        if let Some(ff_al_id) = ff_al_id {
+            self.frequent_flyer.decrement_iattr(c_id, ff_al_id);
+        }
+
+        Ok(())
     }
 
     fn find_flights(
         &self,
-        depart_airport_id: i64,
-        arrive_airport_id: i64,
+        depart_aid: i64,
+        arrive_aid: i64,
         start_timestamp: i64,
         end_timestamp: i64,
-        distance: i64,
-    ) -> Result<(), seats::Error> {
-        unimplemented!()
+        distance: f64,
+    ) -> Result<Vec<AirportInfo>, seats::Error> {
+        let mut arrive_aids = vec![arrive_aid];
+
+        if distance > 0.0 {
+            arrive_aids.extend(
+                self.airport_distance
+                    .get_nearby_airports(depart_aid, distance),
+            );
+        }
+
+        Ok(self
+            .flight
+            .get_flights(
+                depart_aid,
+                start_timestamp,
+                end_timestamp,
+                &arrive_aids.into_iter().take(3).collect(),
+            )
+            .into_iter()
+            .map(|flight_info| {
+                let al_name = self.airline.get_airline_name(flight_info.al_id);
+
+                let (depart_ap_code, depart_ap_name, depart_ap_city, depart_ap_co_id) =
+                    self.airport.get_airport_info(depart_aid);
+
+                let (arrive_ap_code, arrive_ap_name, arrive_ap_city, arrive_ap_co_id) =
+                    self.airport.get_airport_info(arrive_aid);
+
+                AirportInfo {
+                    f_id: flight_info.id,
+                    seats_left: flight_info.seats_left,
+                    al_name: al_name.to_string(),
+                    depart_time: flight_info.depart_time,
+                    depart_ap_code: depart_ap_code.to_string(),
+                    depart_ap_name: depart_ap_name.to_string(),
+                    depart_ap_city: depart_ap_city.to_string(),
+                    depart_ap_co_id,
+                    arrive_time: flight_info.arrive_time,
+                    arrive_ap_code: arrive_ap_code.to_string(),
+                    arrive_ap_name: arrive_ap_name.to_string(),
+                    arrive_ap_city: arrive_ap_city.to_string(),
+                    arrive_ap_co_id,
+                }
+            })
+            .collect())
     }
 
     fn find_open_seats(&self, f_id: i64) -> Result<Vec<(i64, i64, f64)>, seats::Error> {
@@ -1225,28 +1503,86 @@ impl SEATSConnection for Database {
 
     fn new_reservation(
         &self,
-        reservation_id: i64,
-        customer_id: i64,
-        flight_id: i64,
-        seat_num: i64,
+        r_id: i64,
+        c_id: i64,
+        f_id: i64,
+        seat: i64,
         price: f64,
-        attrs: &[i64],
+        iattrs: &[i64],
     ) -> Result<(), seats::Error> {
-        unimplemented!()
+        let (airline_id, seats_left) = self
+            .flight
+            .get_airline_and_seats_left(f_id)
+            .ok_or(seats::Error::UserAbort(format!("invalid flight {}", f_id)))?;
+
+        if seats_left <= 0 {
+            return Err(seats::Error::UserAbort(format!(
+                "no seats available for flight {}",
+                f_id
+            )));
+        }
+
+        if self.reservation.seat_is_reserved(f_id, seat) {
+            return Err(seats::Error::UserAbort(format!(
+                "seat {} on flight {} is reserved",
+                seat, f_id
+            )));
+        }
+
+        if self
+            .reservation
+            .customer_has_reservation_on_flight(c_id, f_id)
+        {
+            return Err(seats::Error::UserAbort(format!(
+                "customer {} already has reservation on flight {}",
+                c_id, f_id
+            )));
+        }
+
+        self.reservation
+            .insert(r_id, c_id, f_id, seat, price, iattrs)
+            .map_err(|_| seats::Error::InvalidOperation)?;
+
+        self.flight.decrement_seats_left(f_id);
+
+        self.customer
+            .update_customer_new_reservation(c_id, iattrs[0], iattrs[1], iattrs[2], iattrs[3]);
+
+        self.frequent_flyer.set_iattrs_new_reservation(
+            c_id, airline_id, iattrs[4], iattrs[5], iattrs[6], iattrs[7],
+        );
+
+        Ok(())
     }
 
     fn update_customer<S>(
         &self,
-        customer_id: i64,
-        customer_id_string: Option<S>,
-        update_frequent_flyer: i64,
-        attr0: i64,
-        attr1: i64,
+        variant: UpdateCustomerVariant,
+        update_frequent_flyer: bool,
+        iattr0: i64,
+        iattr1: i64,
     ) -> Result<(), seats::Error>
     where
         S: AsRef<str> + Debug,
     {
-        unimplemented!()
+        let c_id =
+            match variant {
+                UpdateCustomerVariant::CustomerId(c_id) => c_id,
+                UpdateCustomerVariant::CustomerIdString(c_id_str) => {
+                    self.customer.get_customer_id_from_str(c_id_str).ok_or(
+                        seats::Error::UserAbort(format!("customer {} not found", c_id_str)),
+                    )?
+                }
+            };
+
+        if update_frequent_flyer {
+            self.frequent_flyer
+                .set_iattrs_update_customer(c_id, iattr0, iattr1);
+        }
+
+        self.customer.update_customer_iattrs(c_id, iattr0, iattr1);
+
+        Ok(())
     }
 
     fn update_reservation(
@@ -1261,19 +1597,25 @@ impl SEATSConnection for Database {
         assert!(iattr_index < 4);
 
         if self.reservation.seat_is_reserved(f_id, seat) {
-            return Err(seats::Error::SeatReserved { f_id, seat });
+            return Err(seats::Error::UserAbort(format!(
+                "seat {} on flight {} is reserved",
+                seat, f_id
+            )));
         }
 
         if !self
             .reservation
             .customer_has_reservation_on_flight(c_id, f_id)
         {
-            return Err(seats::Error::NonexistentReservation { c_id, f_id });
+            return Err(seats::Error::UserAbort(format!(
+                "customer {} has no reservation on flight {}",
+                c_id, f_id
+            )));
         }
 
         self.reservation
             .update_reservation(r_id, c_id, f_id, seat, iattr_index, iattr)
-            .map_err(|e| seats::Error::InvalidOperation)
+            .map_err(|_| seats::Error::InvalidOperation)
     }
 }
 
@@ -1300,5 +1642,5 @@ fn test() {
     let flight = Flight::new("/Users/kpg/data/flight.csv");
     println!("{}", flight.id.value(0));
 
-    let reservation = Reservation::new("/Users/kpg/data/reservation.csv");
+    let _reservation = Reservation::new("/Users/kpg/data/reservation.csv");
 }
