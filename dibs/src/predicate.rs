@@ -29,6 +29,8 @@ pub enum Value {
     Boolean(bool),
     Integer(usize),
     String(String),
+    I64(i64),
+    F64(f64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +77,10 @@ impl Predicate {
         Predicate::Comparison(Comparison::new(operator, left, right))
     }
 
+    pub fn equality(left: usize, right: usize) -> Predicate {
+        Predicate::comparison(ComparisonOperator::Eq, left, right)
+    }
+
     pub fn conjunction(operands: Vec<Predicate>) -> Predicate {
         Predicate::Connective(Connective::Conjunction, operands)
     }
@@ -90,18 +96,6 @@ impl Predicate {
             Predicate::disjunction(vec![])
         }
     }
-
-    // pub fn is_boolean(&self, v: bool) -> bool {
-    //     match self {
-    //         Predicate::Connective(connective, operands) => match (v, connective) {
-    //             (true, Connective::Conjunction) | (false, Connective::Disjunction) => {
-    //                 operands.is_empty()
-    //             }
-    //             _ => false,
-    //         },
-    //         _ => false,
-    //     }
-    // }
 
     pub fn condense(&mut self) {
         let mut stack = vec![self as *mut Predicate];

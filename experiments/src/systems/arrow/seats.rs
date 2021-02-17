@@ -10,6 +10,8 @@ use arrow::array::{
 
 use arrow::csv;
 use arrow::datatypes::{DataType, Field, Float64Type, Int64Type, Schema};
+use dibs::predicate::Value;
+use dibs::{Dibs, Transaction};
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
@@ -17,6 +19,7 @@ use std::fmt::Debug;
 use std::fs::File;
 use std::ops::Bound;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 const BLOCK_CAPACITY: usize = 1024;
@@ -1270,6 +1273,15 @@ pub struct Database {
     frequent_flyer: FrequentFlyer,
     flight: Flight,
     reservation: Reservation,
+    dibs: Dibs,
+    transaction_counter: AtomicUsize,
+}
+
+impl Database {
+    fn new_transaction(&self) -> Transaction {
+        let transaction_id = self.transaction_counter.fetch_add(1, Ordering::Relaxed);
+        Transaction::new(0, transaction_id)
+    }
 }
 
 impl SEATSConnection for Database {
@@ -1278,9 +1290,17 @@ impl SEATSConnection for Database {
         variant: DeleteReservationVariant,
         f_id: i64,
     ) -> Result<(), seats::Error> {
+        let mut transaction = self.new_transaction();
+
         let (c_id, ff_al_id) = match variant {
             DeleteReservationVariant::CustomerId(c_id) => (c_id, None),
             DeleteReservationVariant::CustomerIdString(c_id_str) => {
+                self.dibs.acquire(
+                    &mut transaction,
+                    seats::GET_CUSTOMER_ID_FROM_STR_TEMPLATE_ID,
+                    vec![Value::String(c_id_str.to_string())],
+                )?;
+
                 let c_id = self.customer.get_customer_id_from_str(c_id_str).ok_or(
                     seats::Error::UserAbort(format!("customer {} not found", c_id_str)),
                 )?;
@@ -1288,8 +1308,20 @@ impl SEATSConnection for Database {
                 (c_id, None)
             }
             DeleteReservationVariant::FrequentFlyer(ff_c_id_str) => {
+                self.dibs.acquire(
+                    &mut transaction,
+                    seats::GET_CUSTOMER_ID_FROM_STR_TEMPLATE_ID,
+                    vec![Value::String(ff_c_id_str.to_string())],
+                )?;
+
                 let c_id = self.customer.get_customer_id_from_str(ff_c_id_str).ok_or(
                     seats::Error::UserAbort(format!("customer {} not found", ff_c_id_str)),
+                )?;
+
+                self.dibs.acquire(
+                    &mut transaction,
+                    seats::GET_AIRLINE_IDS_TEMPLATE_ID,
+                    vec![Value::I64(c_id)],
                 )?;
 
                 let ff_al_id = self.frequent_flyer.get_airline_ids(c_id).first().copied();
@@ -1297,6 +1329,12 @@ impl SEATSConnection for Database {
                 (c_id, ff_al_id)
             }
         };
+
+        self.dibs.acquire(
+            &mut transaction,
+            seats::GET_CUSTOMER_ATTRIBUTE_TEMPLATE_ID,
+            vec![Value::I64(c_id)],
+        )?;
 
         let c_iattr00 =
             self.customer
@@ -1306,6 +1344,12 @@ impl SEATSConnection for Database {
                     c_id
                 )))?;
 
+        self.dibs.acquire(
+            &mut transaction,
+            seats::GET_RESERVATION_INFO_TEMPLATE_ID,
+            vec![Value::I64(c_id), Value::I64(f_id)],
+        )?;
+
         let (r_id, price) =
             self.reservation
                 .get_reservation_info(c_id, f_id)
@@ -1314,16 +1358,40 @@ impl SEATSConnection for Database {
                     c_id, f_id
                 )))?;
 
+        self.dibs.acquire(
+            &mut transaction,
+            seats::INSERT_REMOVE_TEMPLATE_ID,
+            vec![Value::I64(r_id), Value::I64(c_id), Value::I64(f_id)],
+        )?;
+
         self.reservation
             .remove(r_id, c_id, f_id)
             .map_err(|_| seats::Error::InvalidOperation)?;
 
+        self.dibs.acquire(
+            &mut transaction,
+            seats::INCREMENT_DECREMENT_SEATS_LEFT_TEMPLATE_ID,
+            vec![Value::I64(f_id)],
+        )?;
+
         self.flight.increment_seats_left(f_id);
+
+        self.dibs.acquire(
+            &mut transaction,
+            seats::UPDATE_CUSTOMER_DELETE_RESERVATION_TEMPLATE_ID,
+            vec![Value::I64(c_id)],
+        )?;
 
         self.customer
             .update_customer_delete_reservation(c_id, -price, c_iattr00);
 
         if let Some(ff_al_id) = ff_al_id {
+            self.dibs.acquire(
+                &mut transaction,
+                seats::DECREMENT_IATTR_TEMPLATE_ID,
+                vec![Value::I64(c_id), Value::I64(ff_al_id)],
+            )?;
+
             self.frequent_flyer.decrement_iattr(c_id, ff_al_id);
         }
 
@@ -1338,16 +1406,34 @@ impl SEATSConnection for Database {
         end_timestamp: i64,
         distance: f64,
     ) -> Result<Vec<AirportInfo>, seats::Error> {
+        let mut transaction = self.new_transaction();
+
         let mut arrive_aids = vec![arrive_aid];
 
         if distance > 0.0 {
+            self.dibs.acquire(
+                &mut transaction,
+                seats::GET_NEARBY_AIRPORTS_TEMPLATE_ID,
+                vec![Value::I64(depart_aid), Value::F64(distance)],
+            )?;
+
             arrive_aids.extend(
                 self.airport_distance
                     .get_nearby_airports(depart_aid, distance),
             );
         }
 
-        Ok(self
+        self.dibs.acquire(
+            &mut transaction,
+            seats::GET_FLIGHTS_TEMPLATE_ID,
+            vec![
+                Value::I64(depart_aid),
+                Value::I64(start_timestamp),
+                Value::I64(end_timestamp),
+            ],
+        )?;
+
+        let flights = self
             .flight
             .get_flights(
                 depart_aid,
@@ -1357,7 +1443,25 @@ impl SEATSConnection for Database {
             )
             .into_iter()
             .map(|flight_info| {
+                self.dibs.acquire(
+                    &mut transaction,
+                    seats::GET_AIRLINE_NAME_TEMPLATE_ID,
+                    vec![Value::I64(flight_info.al_id)],
+                )?;
+
                 let al_name = self.airline.get_airline_name(flight_info.al_id);
+
+                self.dibs.acquire(
+                    &mut transaction,
+                    seats::GET_AIRPORT_INFO_TEMPLATE_ID,
+                    vec![Value::I64(depart_aid)],
+                )?;
+
+                self.dibs.acquire(
+                    &mut transaction,
+                    seats::GET_AIRPORT_INFO_TEMPLATE_ID,
+                    vec![Value::I64(arrive_aid)],
+                )?;
 
                 let (depart_ap_code, depart_ap_name, depart_ap_city, depart_ap_co_id) =
                     self.airport.get_airport_info(depart_aid);
@@ -1365,7 +1469,7 @@ impl SEATSConnection for Database {
                 let (arrive_ap_code, arrive_ap_name, arrive_ap_city, arrive_ap_co_id) =
                     self.airport.get_airport_info(arrive_aid);
 
-                AirportInfo {
+                Ok(AirportInfo {
                     f_id: flight_info.id,
                     seats_left: flight_info.seats_left,
                     al_name: al_name.to_string(),
@@ -1379,14 +1483,31 @@ impl SEATSConnection for Database {
                     arrive_ap_name: arrive_ap_name.to_string(),
                     arrive_ap_city: arrive_ap_city.to_string(),
                     arrive_ap_co_id,
-                }
+                })
             })
-            .collect())
+            .collect::<Result<Vec<AirportInfo>, seats::Error>>()?;
+
+        Ok(flights)
     }
 
     fn find_open_seats(&self, f_id: i64) -> Result<Vec<(i64, i64, f64)>, seats::Error> {
+        let mut transaction = self.new_transaction();
+
         let mut seat_map = vec![false; 150];
+
+        self.dibs.acquire(
+            &mut transaction,
+            seats::GET_PRICE_TEMPLATE_ID,
+            vec![Value::I64(f_id)],
+        )?;
+
         let price = self.flight.get_price(f_id);
+
+        self.dibs.acquire(
+            &mut transaction,
+            seats::GET_RESERVED_SEATS_ON_FLIGHT_TEMPLATE_ID,
+            vec![Value::I64(f_id)],
+        )?;
 
         for seat in self.reservation.get_reserved_seats_on_flight(f_id) {
             let seat_index = usize::try_from(seat).unwrap();
@@ -1414,7 +1535,15 @@ impl SEATSConnection for Database {
         price: f64,
         iattrs: &[i64],
     ) -> Result<(), seats::Error> {
-        let (airline_id, seats_left) = self
+        let mut transaction = self.new_transaction();
+
+        self.dibs.acquire(
+            &mut transaction,
+            seats::GET_AIRLINE_AND_SEATS_LEFT_TEMPLATE_ID,
+            vec![Value::I64(f_id)],
+        )?;
+
+        let (al_id, seats_left) = self
             .flight
             .get_airline_and_seats_left(f_id)
             .ok_or(seats::Error::UserAbort(format!("invalid flight {}", f_id)))?;
@@ -1426,12 +1555,24 @@ impl SEATSConnection for Database {
             )));
         }
 
+        self.dibs.acquire(
+            &mut transaction,
+            seats::SEAT_IS_RESERVED_TEMPLATE_ID,
+            vec![Value::I64(f_id), Value::I64(seat)],
+        )?;
+
         if self.reservation.seat_is_reserved(f_id, seat) {
             return Err(seats::Error::UserAbort(format!(
                 "seat {} on flight {} is reserved",
                 seat, f_id
             )));
         }
+
+        self.dibs.acquire(
+            &mut transaction,
+            seats::CUSTOMER_HAS_RESERVATION_ON_FLIGHT_TEMPLATE_ID,
+            vec![Value::I64(c_id), Value::I64(f_id)],
+        )?;
 
         if self
             .reservation
@@ -1443,18 +1584,41 @@ impl SEATSConnection for Database {
             )));
         }
 
+        self.dibs.acquire(
+            &mut transaction,
+            seats::INSERT_REMOVE_TEMPLATE_ID,
+            vec![Value::I64(r_id), Value::I64(c_id), Value::I64(f_id)],
+        )?;
+
         self.reservation
             .insert(r_id, c_id, f_id, seat, price, iattrs)
             .map_err(|_| seats::Error::InvalidOperation)?;
 
+        self.dibs.acquire(
+            &mut transaction,
+            seats::INCREMENT_DECREMENT_SEATS_LEFT_TEMPLATE_ID,
+            vec![Value::I64(f_id)],
+        )?;
+
         self.flight.decrement_seats_left(f_id);
+
+        self.dibs.acquire(
+            &mut transaction,
+            seats::UPDATE_CUSTOMER_NEW_RESERVATION_TEMPLATE_ID,
+            vec![Value::I64(c_id)],
+        )?;
 
         self.customer
             .update_customer_new_reservation(c_id, iattrs[0], iattrs[1], iattrs[2], iattrs[3]);
 
-        self.frequent_flyer.set_iattrs_new_reservation(
-            c_id, airline_id, iattrs[4], iattrs[5], iattrs[6], iattrs[7],
-        );
+        self.dibs.acquire(
+            &mut transaction,
+            seats::SET_IATTRS_NEW_RESERVATION_TEMPLATE_ID,
+            vec![Value::I64(c_id), Value::I64(al_id)],
+        )?;
+
+        self.frequent_flyer
+            .set_iattrs_new_reservation(c_id, al_id, iattrs[4], iattrs[5], iattrs[6], iattrs[7]);
 
         Ok(())
     }
@@ -1469,10 +1633,18 @@ impl SEATSConnection for Database {
     where
         S: AsRef<str> + Debug,
     {
+        let mut transaction = self.new_transaction();
+
         let c_id =
             match variant {
                 UpdateCustomerVariant::CustomerId(c_id) => c_id,
                 UpdateCustomerVariant::CustomerIdString(c_id_str) => {
+                    self.dibs.acquire(
+                        &mut transaction,
+                        seats::GET_CUSTOMER_ID_FROM_STR_TEMPLATE_ID,
+                        vec![Value::String(c_id_str.to_string())],
+                    )?;
+
                     self.customer.get_customer_id_from_str(c_id_str).ok_or(
                         seats::Error::UserAbort(format!("customer {} not found", c_id_str)),
                     )?
@@ -1480,9 +1652,21 @@ impl SEATSConnection for Database {
             };
 
         if update_frequent_flyer {
+            self.dibs.acquire(
+                &mut transaction,
+                seats::SET_IATTRS_UPDATE_CUSTOMER_TEMPLATE_ID,
+                vec![Value::I64(c_id)],
+            )?;
+
             self.frequent_flyer
                 .set_iattrs_update_customer(c_id, iattr0, iattr1);
         }
+
+        self.dibs.acquire(
+            &mut transaction,
+            seats::UPDATE_CUSTOMER_IATTRS_TEMPLATE_ID,
+            vec![Value::I64(c_id)],
+        )?;
 
         self.customer.update_customer_iattrs(c_id, iattr0, iattr1);
 
@@ -1500,12 +1684,26 @@ impl SEATSConnection for Database {
     ) -> Result<(), seats::Error> {
         assert!(iattr_index < 4);
 
+        let mut transaction = self.new_transaction();
+
+        self.dibs.acquire(
+            &mut transaction,
+            seats::SEAT_IS_RESERVED_TEMPLATE_ID,
+            vec![Value::I64(f_id), Value::I64(seat)],
+        )?;
+
         if self.reservation.seat_is_reserved(f_id, seat) {
             return Err(seats::Error::UserAbort(format!(
                 "seat {} on flight {} is reserved",
                 seat, f_id
             )));
         }
+
+        self.dibs.acquire(
+            &mut transaction,
+            seats::CUSTOMER_HAS_RESERVATION_ON_FLIGHT_TEMPLATE_ID,
+            vec![Value::I64(c_id), Value::I64(f_id)],
+        )?;
 
         if !self
             .reservation
@@ -1516,6 +1714,12 @@ impl SEATSConnection for Database {
                 c_id, f_id
             )));
         }
+
+        self.dibs.acquire(
+            &mut transaction,
+            seats::UPDATE_RESERVATION_TEMPLATE_ID,
+            vec![Value::I64(r_id), Value::I64(c_id), Value::I64(f_id)],
+        )?;
 
         self.reservation
             .update_reservation(r_id, c_id, f_id, seat, iattr_index, iattr)

@@ -179,9 +179,9 @@ impl Transaction {
         }
     }
 
-    pub fn commit(self) {
+    pub fn commit(&self) {
         let transaction_id = self.transaction_id;
-        for bucket in self.buckets {
+        for bucket in &self.buckets {
             for request in bucket
                 .lock()
                 .unwrap()
@@ -190,6 +190,12 @@ impl Transaction {
                 request.complete();
             }
         }
+    }
+}
+
+impl Drop for Transaction {
+    fn drop(&mut self) {
+        self.commit();
     }
 }
 
