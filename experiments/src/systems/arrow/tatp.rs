@@ -3,7 +3,7 @@ use crate::benchmarks::tatp::TATPConnection;
 use crate::Connection;
 use arrow::array::{
     ArrayBuilder, BooleanArray, BooleanBuilder, FixedSizeBinaryArray, FixedSizeBinaryBuilder,
-    PrimitiveArrayOps, UInt32Array, UInt32Builder, UInt8Array, UInt8Builder,
+    UInt32Array, UInt32Builder, UInt8Array, UInt8Builder,
 };
 use fnv::FnvHashMap;
 use rand::seq::SliceRandom;
@@ -107,10 +107,7 @@ impl Subscriber {
 
     pub fn update_row_bit(&self, row: usize, bit_1: bool) {
         unsafe {
-            let bit_1_dst = self.col_bit[0]
-                .values()
-                .raw_data()
-                .offset((row / 8) as isize) as *mut u8;
+            let bit_1_dst = self.col_bit[0].values().as_ptr().offset((row / 8) as isize) as *mut u8;
 
             if bit_1 {
                 *bit_1_dst |= 1 << (row % 8);
@@ -123,7 +120,7 @@ impl Subscriber {
     pub fn update_row_location(&self, row: usize, vlr_location: u32) {
         unsafe {
             let vlr_location_dst =
-                self.col_vlr_location.raw_values().offset(row as isize) as *mut u32;
+                self.col_vlr_location.values().as_ptr().offset(row as isize) as *mut u32;
 
             *vlr_location_dst = vlr_location;
         }
@@ -456,7 +453,8 @@ impl TATPConnection for ArrowTATPConnection {
                     .db
                     .special_facility
                     .col_data_a
-                    .raw_values()
+                    .values()
+                    .as_ptr()
                     .offset(*row as isize) as *mut u8;
 
                 *data_a_dst = data_a;
@@ -503,28 +501,32 @@ impl TATPConnection for ArrowTATPConnection {
                     .db
                     .call_forwarding
                     .s_id
-                    .raw_values()
+                    .values()
+                    .as_ptr()
                     .offset(row as isize) as *mut u32;
 
                 let sf_type_dst = self
                     .db
                     .call_forwarding
                     .sf_type
-                    .raw_values()
+                    .values()
+                    .as_ptr()
                     .offset(row as isize) as *mut u8;
 
                 let start_time_dst = self
                     .db
                     .call_forwarding
                     .start_time
-                    .raw_values()
+                    .values()
+                    .as_ptr()
                     .offset(row as isize) as *mut u8;
 
                 let end_time_dst = self
                     .db
                     .call_forwarding
                     .end_time
-                    .raw_values()
+                    .values()
+                    .as_ptr()
                     .offset(row as isize) as *mut u8;
 
                 let numberx_dst = self.db.call_forwarding.numberx.value(row).as_ptr() as *mut u8;

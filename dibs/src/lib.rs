@@ -3,6 +3,7 @@
 use crate::predicate::{ComparisonOperator, Connective, Predicate, Value};
 use fnv::FnvHashSet;
 use rand::Rng;
+use std::convert::TryFrom;
 use std::str::FromStr;
 use std::sync::{Arc, Condvar, Mutex, WaitTimeoutResult};
 use std::time::Duration;
@@ -11,7 +12,7 @@ pub mod predicate;
 mod solver;
 mod union_find;
 
-const FILTER_MAGNITUDE: usize = 1024;
+const FILTER_MAGNITUDE: usize = 8;
 
 #[derive(Clone)]
 pub struct RequestTemplate {
@@ -299,6 +300,7 @@ impl Dibs {
                     Some(filter) => {
                         let bucket_index = match &request.arguments[filter] {
                             &Value::Integer(v) => v % buckets.len(),
+                            &Value::I64(v) => usize::try_from(v).unwrap() % buckets.len(),
                             _ => panic!("filtering on non-integer columns is not yet supported"),
                         };
 

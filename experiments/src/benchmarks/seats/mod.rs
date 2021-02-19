@@ -54,15 +54,15 @@ impl From<dibs::AcquireError> for Error {
     }
 }
 
-pub enum DeleteReservationVariant<'a> {
+pub enum DeleteReservationVariant {
     CustomerId(i64),
-    CustomerIdString(&'a str),
-    FrequentFlyer(&'a str),
+    CustomerIdString(String),
+    FrequentFlyer(String),
 }
 
-pub enum UpdateCustomerVariant<'a> {
+pub enum UpdateCustomerVariant {
     CustomerId(i64),
-    CustomerIdString(&'a str),
+    CustomerIdString(String),
 }
 
 pub struct AirportInfo {
@@ -94,7 +94,7 @@ pub trait SEATSConnection {
         arrive_aid: i64,
         start_timestamp: i64,
         end_timestamp: i64,
-        distance: f64,
+        distance: i64,
     ) -> Result<Vec<AirportInfo>, Error>;
 
     fn find_open_seats(&self, f_id: i64) -> Result<Vec<(i64, i64, f64)>, Error>;
@@ -109,15 +109,13 @@ pub trait SEATSConnection {
         iattrs: &[i64],
     ) -> Result<(), Error>;
 
-    fn update_customer<S>(
+    fn update_customer(
         &self,
         variant: UpdateCustomerVariant,
-        update_frequent_flyer: bool,
+        update_ff: bool,
         iattr0: i64,
         iattr1: i64,
-    ) -> Result<(), Error>
-    where
-        S: AsRef<str> + Debug;
+    ) -> Result<(), Error>;
 
     fn update_reservation(
         &self,
@@ -385,6 +383,6 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
         &templates,
         optimization,
         usize::max_value(),
-        Duration::from_secs(10),
+        Duration::from_millis(100),
     )
 }

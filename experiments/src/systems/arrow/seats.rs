@@ -3,15 +3,11 @@ use crate::benchmarks::seats::{
     AirportInfo, DeleteReservationVariant, SEATSConnection, UpdateCustomerVariant,
 };
 use crate::systems::arrow::{BooleanArrayMut, Float64ArrayMut, Int64ArrayMut};
-use arrow::array::{
-    Array, ArrayBuilder, Float64Array, Float64Builder, Int64Array, Int64Builder, PrimitiveArrayOps,
-    StringArray, StringBuilder,
-};
-
+use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
 use arrow::csv;
 use arrow::datatypes::{DataType, Field, Float64Type, Int64Type, Schema};
 use dibs::predicate::Value;
-use dibs::{Dibs, Transaction};
+use dibs::{Dibs, OptimizationLevel, Transaction};
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
@@ -25,10 +21,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 const BLOCK_CAPACITY: usize = 1024;
 const NUM_PARTITIONS: usize = 1024;
 
+const COUNTRY_RECORDS: usize = 248;
+const AIRLINE_RECORDS: usize = 1250;
+const AIRPORT_RECORDS: usize = 286;
+const AIRPORT_DISTANCE_RECORDS: usize = 40755;
+const CUSTOMER_RECORDS: usize = 1000000;
+const FLIGHT_RECORDS: usize = 763951;
+const FREQUENT_FLYER_RECORDS: usize = 2162434;
+const RESERVATION_RECORDS: usize = 1144314;
+
 #[derive(Debug)]
 enum Error {
-    DuplicateKey,
-    NonexistentKey,
+    DuplicateKey(String),
+    NonexistentKey(String),
 }
 
 #[allow(dead_code)]
@@ -45,6 +50,8 @@ impl Country {
     where
         P: AsRef<Path>,
     {
+        println!("Loading COUNTRY...");
+
         let schema = Schema::new(vec![
             Field::new("CO_ID", DataType::Int64, false),
             Field::new("CO_NAME", DataType::Utf8, false),
@@ -53,27 +60,19 @@ impl Country {
         ]);
 
         let file = File::open(path).unwrap();
-        let csv = csv::Reader::new(file, Arc::new(schema), true, None, 1024, None);
+        let mut csv = csv::Reader::new(
+            file,
+            Arc::new(schema),
+            true,
+            None,
+            COUNTRY_RECORDS,
+            None,
+            None,
+        );
 
-        let mut id_builder = Int64Builder::new(0);
-        let mut name_builder = StringBuilder::new(0);
-        let mut code_2_builder = StringBuilder::new(0);
-        let mut code_3_builder = StringBuilder::new(0);
+        let batch = csv.next().unwrap().unwrap();
 
-        for result in csv {
-            let batch = result.unwrap();
-
-            id_builder.append_data(&[batch.column(0).data()]).unwrap();
-            name_builder.append_data(&[batch.column(1).data()]).unwrap();
-            code_2_builder
-                .append_data(&[batch.column(2).data()])
-                .unwrap();
-            code_3_builder
-                .append_data(&[batch.column(3).data()])
-                .unwrap();
-        }
-
-        let id = id_builder.finish();
+        let id = Int64Array::from(batch.column(0).data());
 
         let pk_index = id
             .iter()
@@ -83,9 +82,9 @@ impl Country {
 
         Country {
             id,
-            name: name_builder.finish(),
-            code_2: code_2_builder.finish(),
-            code_3: code_3_builder.finish(),
+            name: StringArray::from(batch.column(1).data()),
+            code_2: StringArray::from(batch.column(2).data()),
+            code_3: StringArray::from(batch.column(2).data()),
             pk_index,
         }
     }
@@ -112,6 +111,8 @@ impl Airport {
     where
         P: AsRef<Path>,
     {
+        println!("Loading AIRPORT...");
+
         let mut fields = vec![
             Field::new("AP_ID", DataType::Int64, false),
             Field::new("AP_CODE", DataType::Utf8, false),
@@ -136,52 +137,19 @@ impl Airport {
         let schema = Schema::new(fields);
 
         let file = File::open(path).unwrap();
-        let csv = csv::Reader::new(file, Arc::new(schema), true, None, 1024, None);
+        let mut csv = csv::Reader::new(
+            file,
+            Arc::new(schema),
+            true,
+            None,
+            AIRPORT_RECORDS,
+            None,
+            None,
+        );
 
-        let mut id_builder = Int64Builder::new(0);
-        let mut code_builder = StringBuilder::new(0);
-        let mut name_builder = StringBuilder::new(0);
-        let mut city_builder = StringBuilder::new(0);
-        let mut postal_code_builder = StringBuilder::new(0);
-        let mut co_id_builder = Int64Builder::new(0);
-        let mut longitude_builder = Float64Builder::new(0);
-        let mut latitude_builder = Float64Builder::new(0);
-        let mut gmt_offset_builder = Float64Builder::new(0);
-        let mut wac_builder = Int64Builder::new(0);
-        let mut iattr_builders = (0..16).map(|_| Int64Builder::new(0)).collect::<Vec<_>>();
+        let batch = csv.next().unwrap().unwrap();
 
-        for result in csv {
-            let batch = result.unwrap();
-
-            id_builder.append_data(&[batch.column(0).data()]).unwrap();
-            code_builder.append_data(&[batch.column(1).data()]).unwrap();
-            name_builder.append_data(&[batch.column(2).data()]).unwrap();
-            city_builder.append_data(&[batch.column(3).data()]).unwrap();
-            postal_code_builder
-                .append_data(&[batch.column(4).data()])
-                .unwrap();
-            co_id_builder
-                .append_data(&[batch.column(5).data()])
-                .unwrap();
-            longitude_builder
-                .append_data(&[batch.column(6).data()])
-                .unwrap();
-            latitude_builder
-                .append_data(&[batch.column(7).data()])
-                .unwrap();
-            gmt_offset_builder
-                .append_data(&[batch.column(8).data()])
-                .unwrap();
-            wac_builder.append_data(&[batch.column(9).data()]).unwrap();
-
-            for (i, iattr_builder) in iattr_builders.iter_mut().enumerate() {
-                iattr_builder
-                    .append_data(&[batch.column(i + 10).data()])
-                    .unwrap();
-            }
-        }
-
-        let id = id_builder.finish();
+        let id = Int64Array::from(batch.column(0).data());
 
         let pk_index = id
             .iter()
@@ -191,16 +159,18 @@ impl Airport {
 
         Airport {
             id,
-            code: code_builder.finish(),
-            name: name_builder.finish(),
-            city: city_builder.finish(),
-            postal_code: postal_code_builder.finish(),
-            co_id: co_id_builder.finish(),
-            longitude: longitude_builder.finish(),
-            latitude: latitude_builder.finish(),
-            gmt_offset: gmt_offset_builder.finish(),
-            wac: wac_builder.finish(),
-            iattrs: iattr_builders.into_iter().map(|mut b| b.finish()).collect(),
+            code: StringArray::from(batch.column(1).data()),
+            name: StringArray::from(batch.column(2).data()),
+            city: StringArray::from(batch.column(3).data()),
+            postal_code: StringArray::from(batch.column(4).data()),
+            co_id: Int64Array::from(batch.column(5).data()),
+            longitude: Float64Array::from(batch.column(6).data()),
+            latitude: Float64Array::from(batch.column(7).data()),
+            gmt_offset: Float64Array::from(batch.column(8).data()),
+            wac: Int64Array::from(batch.column(9).data()),
+            iattrs: (10..26)
+                .map(|i| Int64Array::from(batch.column(i).data()))
+                .collect::<Vec<_>>(),
             pk_index,
         }
     }
@@ -231,6 +201,8 @@ impl AirportDistance {
     where
         P: AsRef<Path>,
     {
+        println!("Loading AIRPORT_DISTANCE...");
+
         let schema = Schema::new(vec![
             Field::new("D_AP_ID0", DataType::Int64, false),
             Field::new("D_AP_ID1", DataType::Int64, false),
@@ -238,24 +210,20 @@ impl AirportDistance {
         ]);
 
         let file = File::open(path).unwrap();
-        let csv = csv::Reader::new(file, Arc::new(schema), true, None, 1024, None);
+        let mut csv = csv::Reader::new(
+            file,
+            Arc::new(schema),
+            true,
+            None,
+            AIRPORT_DISTANCE_RECORDS,
+            None,
+            None,
+        );
 
-        let mut id0_builder = Int64Builder::new(0);
-        let mut id1_builder = Int64Builder::new(0);
-        let mut distance_builder = Float64Builder::new(0);
+        let batch = csv.next().unwrap().unwrap();
 
-        for result in csv {
-            let batch = result.unwrap();
-
-            id0_builder.append_data(&[batch.column(0).data()]).unwrap();
-            id1_builder.append_data(&[batch.column(1).data()]).unwrap();
-            distance_builder
-                .append_data(&[batch.column(2).data()])
-                .unwrap();
-        }
-
-        let id0 = id0_builder.finish();
-        let id1 = id1_builder.finish();
+        let id0 = Int64Array::from(batch.column(0).data());
+        let id1 = Int64Array::from(batch.column(1).data());
 
         let mut pk_index = HashMap::new();
 
@@ -269,7 +237,7 @@ impl AirportDistance {
         AirportDistance {
             id0,
             id1,
-            distance: distance_builder.finish(),
+            distance: Float64Array::from(batch.column(2).data()),
             pk_index,
         }
     }
@@ -318,6 +286,8 @@ impl Airline {
     where
         P: AsRef<Path>,
     {
+        println!("Loading AIRLINE...");
+
         let mut fields = vec![
             Field::new("AL_ID", DataType::Int64, false),
             Field::new("AL_IATA_CODE", DataType::Utf8, true),
@@ -338,42 +308,19 @@ impl Airline {
         let schema = Schema::new(fields);
 
         let file = File::open(path).unwrap();
-        let csv = csv::Reader::new(file, Arc::new(schema), true, None, 1024, None);
+        let mut csv = csv::Reader::new(
+            file,
+            Arc::new(schema),
+            true,
+            None,
+            AIRLINE_RECORDS,
+            None,
+            None,
+        );
 
-        let mut id_builder = Int64Builder::new(0);
-        let mut iata_code_builder = StringBuilder::new(0);
-        let mut icao_code_builder = StringBuilder::new(0);
-        let mut call_sign_builder = StringBuilder::new(0);
-        let mut name_builder = StringBuilder::new(0);
-        let mut co_id_builder = Int64Builder::new(0);
-        let mut iattr_builders = (0..16).map(|_| Int64Builder::new(0)).collect::<Vec<_>>();
+        let batch = csv.next().unwrap().unwrap();
 
-        for result in csv {
-            let batch = result.unwrap();
-
-            id_builder.append_data(&[batch.column(0).data()]).unwrap();
-            iata_code_builder
-                .append_data(&[batch.column(1).data()])
-                .unwrap();
-            icao_code_builder
-                .append_data(&[batch.column(2).data()])
-                .unwrap();
-            call_sign_builder
-                .append_data(&[batch.column(3).data()])
-                .unwrap();
-            name_builder.append_data(&[batch.column(4).data()]).unwrap();
-            co_id_builder
-                .append_data(&[batch.column(5).data()])
-                .unwrap();
-
-            for (i, iattr_builder) in iattr_builders.iter_mut().enumerate() {
-                iattr_builder
-                    .append_data(&[batch.column(i + 6).data()])
-                    .unwrap();
-            }
-        }
-
-        let id = id_builder.finish();
+        let id = Int64Array::from(batch.column(0).data());
 
         let pk_index = id
             .iter()
@@ -382,13 +329,15 @@ impl Airline {
             .collect();
 
         Airline {
-            id: id_builder.finish(),
-            iata_code: iata_code_builder.finish(),
-            icao_code: icao_code_builder.finish(),
-            call_sign: call_sign_builder.finish(),
-            name: name_builder.finish(),
-            co_id: co_id_builder.finish(),
-            iattrs: iattr_builders.into_iter().map(|mut b| b.finish()).collect(),
+            id,
+            iata_code: StringArray::from(batch.column(1).data()),
+            icao_code: StringArray::from(batch.column(2).data()),
+            call_sign: StringArray::from(batch.column(3).data()),
+            name: StringArray::from(batch.column(4).data()),
+            co_id: Int64Array::from(batch.column(5).data()),
+            iattrs: (6..22)
+                .map(|i| Int64Array::from(batch.column(i).data()))
+                .collect::<Vec<_>>(),
             pk_index,
         }
     }
@@ -418,6 +367,8 @@ impl Customer {
     where
         P: AsRef<Path>,
     {
+        println!("Loading CUSTOMER...");
+
         let mut fields = vec![
             Field::new("C_ID", DataType::Int64, false),
             Field::new("C_ID_STR", DataType::Utf8, false),
@@ -444,44 +395,20 @@ impl Customer {
         let schema = Schema::new(fields);
 
         let file = File::open(path).unwrap();
-        let csv = csv::Reader::new(file, Arc::new(schema), true, None, 1024, None);
+        let mut csv = csv::Reader::new(
+            file,
+            Arc::new(schema),
+            true,
+            None,
+            CUSTOMER_RECORDS,
+            None,
+            None,
+        );
 
-        let mut id_builder = Int64Builder::new(0);
-        let mut id_str_builder = StringBuilder::new(0);
-        let mut base_ap_id_builder = Int64Builder::new(0);
-        let mut balance_builder = Float64Builder::new(0);
-        let mut sattr_builders = (0..20).map(|_| StringBuilder::new(0)).collect::<Vec<_>>();
-        let mut iattr_builders = (0..20).map(|_| Int64Builder::new(0)).collect::<Vec<_>>();
+        let batch = csv.next().unwrap().unwrap();
 
-        for result in csv {
-            let batch = result.unwrap();
-
-            id_builder.append_data(&[batch.column(0).data()]).unwrap();
-            id_str_builder
-                .append_data(&[batch.column(1).data()])
-                .unwrap();
-            base_ap_id_builder
-                .append_data(&[batch.column(2).data()])
-                .unwrap();
-            balance_builder
-                .append_data(&[batch.column(3).data()])
-                .unwrap();
-
-            for (i, sattr_builder) in sattr_builders.iter_mut().enumerate() {
-                sattr_builder
-                    .append_data(&[batch.column(i + 4).data()])
-                    .unwrap();
-            }
-
-            for (i, iattr_builder) in iattr_builders.iter_mut().enumerate() {
-                iattr_builder
-                    .append_data(&[batch.column(i + 24).data()])
-                    .unwrap();
-            }
-        }
-
-        let id = id_builder.finish();
-        let id_str = id_str_builder.finish();
+        let id = Int64Array::from(batch.column(0).data());
+        let id_str = StringArray::from(batch.column(1).data());
 
         let pk_index = id
             .iter()
@@ -496,13 +423,14 @@ impl Customer {
         Customer {
             id,
             id_str,
-            base_ap_id: base_ap_id_builder.finish(),
-            balance: Float64ArrayMut(balance_builder.finish()),
-            sattrs: sattr_builders.into_iter().map(|mut b| b.finish()).collect(),
-            iattrs: iattr_builders
-                .into_iter()
-                .map(|mut b| Int64ArrayMut(b.finish()))
-                .collect(),
+            base_ap_id: Int64Array::from(batch.column(2).data()),
+            balance: Float64ArrayMut(Float64Array::from(batch.column(3).data())),
+            sattrs: (4..24)
+                .map(|i| StringArray::from(batch.column(i).data()))
+                .collect::<Vec<_>>(),
+            iattrs: (24..44)
+                .map(|i| Int64ArrayMut(Int64Array::from(batch.column(i).data())))
+                .collect::<Vec<_>>(),
             pk_index,
             id_str_index,
         }
@@ -519,13 +447,6 @@ impl Customer {
         self.pk_index.get(&c_id).map(|&row_index| {
             assert_eq!(self.id.value(row_index), c_id);
             self.iattrs[0].0.value(row_index)
-        })
-    }
-
-    fn get_customer_base_airport(&self, c_id: i64) -> Option<i64> {
-        self.pk_index.get(&c_id).map(|&row_index| {
-            assert_eq!(self.id.value(row_index), c_id);
-            self.base_ap_id.value(row_index)
         })
     }
 
@@ -550,26 +471,28 @@ impl Customer {
         iattr14: i64,
         iattr15: i64,
     ) {
-        let row_index = self.pk_index[&c_id];
-        assert_eq!(self.id.value(row_index), c_id);
+        if let Some(&row_index) = self.pk_index.get(&c_id) {
+            assert_eq!(self.id.value(row_index), c_id);
 
-        unsafe {
-            self.iattrs[10].set(row_index, self.iattrs[10].0.value(row_index) + 1);
-            self.iattrs[11].set(row_index, self.iattrs[11].0.value(row_index) + 1);
-            self.iattrs[12].set(row_index, iattr12);
-            self.iattrs[13].set(row_index, iattr13);
-            self.iattrs[14].set(row_index, iattr14);
-            self.iattrs[15].set(row_index, iattr15);
+            unsafe {
+                self.iattrs[10].set(row_index, self.iattrs[10].0.value(row_index) + 1);
+                self.iattrs[11].set(row_index, self.iattrs[11].0.value(row_index) + 1);
+                self.iattrs[12].set(row_index, iattr12);
+                self.iattrs[13].set(row_index, iattr13);
+                self.iattrs[14].set(row_index, iattr14);
+                self.iattrs[15].set(row_index, iattr15);
+            }
         }
     }
 
     fn update_customer_iattrs(&self, c_id: i64, iattr00: i64, iattr01: i64) {
-        let row_index = self.pk_index[&c_id];
-        assert_eq!(self.id.value(row_index), c_id);
+        if let Some(&row_index) = self.pk_index.get(&c_id) {
+            assert_eq!(self.id.value(row_index), c_id);
 
-        unsafe {
-            self.iattrs[0].set(row_index, iattr00);
-            self.iattrs[1].set(row_index, iattr01);
+            unsafe {
+                self.iattrs[0].set(row_index, iattr00);
+                self.iattrs[1].set(row_index, iattr01);
+            }
         }
     }
 }
@@ -589,6 +512,8 @@ impl FrequentFlyer {
     where
         P: AsRef<Path>,
     {
+        println!("Loading FREQUENT_FLYER...");
+
         let mut fields = vec![
             Field::new("FF_C_ID", DataType::Int64, false),
             Field::new("FF_AL_ID", DataType::Int64, false),
@@ -610,40 +535,20 @@ impl FrequentFlyer {
         let schema = Schema::new(fields);
 
         let file = File::open(path).unwrap();
-        let csv = csv::Reader::new(file, Arc::new(schema), true, None, 1024, None);
+        let mut csv = csv::Reader::new(
+            file,
+            Arc::new(schema),
+            true,
+            None,
+            FREQUENT_FLYER_RECORDS,
+            None,
+            None,
+        );
 
-        let mut c_id_builder = Int64Builder::new(0);
-        let mut al_id_builder = Int64Builder::new(0);
-        let mut c_id_str_builder = StringBuilder::new(0);
-        let mut sattr_builders = (0..4).map(|_| StringBuilder::new(0)).collect::<Vec<_>>();
-        let mut iattr_builders = (0..16).map(|_| Int64Builder::new(0)).collect::<Vec<_>>();
+        let batch = csv.next().unwrap().unwrap();
 
-        for result in csv {
-            let batch = result.unwrap();
-
-            c_id_builder.append_data(&[batch.column(0).data()]).unwrap();
-            al_id_builder
-                .append_data(&[batch.column(1).data()])
-                .unwrap();
-            c_id_str_builder
-                .append_data(&[batch.column(2).data()])
-                .unwrap();
-
-            for (i, sattr_builder) in sattr_builders.iter_mut().enumerate() {
-                sattr_builder
-                    .append_data(&[batch.column(i + 3).data()])
-                    .unwrap();
-            }
-
-            for (i, iattr_builder) in iattr_builders.iter_mut().enumerate() {
-                iattr_builder
-                    .append_data(&[batch.column(i + 7).data()])
-                    .unwrap();
-            }
-        }
-
-        let c_id = c_id_builder.finish();
-        let al_id = al_id_builder.finish();
+        let c_id = Int64Array::from(batch.column(0).data());
+        let al_id = Int64Array::from(batch.column(1).data());
 
         let mut pk_index = HashMap::new();
 
@@ -657,12 +562,13 @@ impl FrequentFlyer {
         FrequentFlyer {
             c_id,
             al_id,
-            c_id_str: c_id_str_builder.finish(),
-            sattrs: sattr_builders.into_iter().map(|mut b| b.finish()).collect(),
-            iattrs: iattr_builders
-                .into_iter()
-                .map(|mut b| Int64ArrayMut(b.finish()))
-                .collect(),
+            c_id_str: StringArray::from(batch.column(2).data()),
+            sattrs: (3..7)
+                .map(|i| StringArray::from(batch.column(i).data()))
+                .collect::<Vec<_>>(),
+            iattrs: (7..23)
+                .map(|i| Int64ArrayMut(Int64Array::from(batch.column(i).data())))
+                .collect::<Vec<_>>(),
             pk_index,
         }
     }
@@ -693,28 +599,34 @@ impl FrequentFlyer {
         iattr13: i64,
         iattr14: i64,
     ) {
-        // May need to change this. In the original, we don't care if we update frequent flyer.
-        let row_index = self.pk_index[&c_id][&al_id];
-        assert_eq!(self.c_id.value(row_index), c_id);
-        assert_eq!(self.al_id.value(row_index), al_id);
-
-        unsafe {
-            self.iattrs[10].set(row_index, self.iattrs[10].0.value(row_index) + 1);
-            self.iattrs[11].set(row_index, iattr11);
-            self.iattrs[12].set(row_index, iattr12);
-            self.iattrs[13].set(row_index, iattr13);
-            self.iattrs[14].set(row_index, iattr14);
-        }
-    }
-
-    fn set_iattrs_update_customer(&self, c_id: i64, iattr00: i64, iattr01: i64) {
-        for (&al_id, &row_index) in &self.pk_index[&c_id] {
+        if let Some(&row_index) = self
+            .pk_index
+            .get(&c_id)
+            .and_then(|m_al_id| m_al_id.get(&al_id))
+        {
             assert_eq!(self.c_id.value(row_index), c_id);
             assert_eq!(self.al_id.value(row_index), al_id);
 
             unsafe {
-                self.iattrs[0].set(row_index, iattr00);
-                self.iattrs[1].set(row_index, iattr01);
+                self.iattrs[10].set(row_index, self.iattrs[10].0.value(row_index) + 1);
+                self.iattrs[11].set(row_index, iattr11);
+                self.iattrs[12].set(row_index, iattr12);
+                self.iattrs[13].set(row_index, iattr13);
+                self.iattrs[14].set(row_index, iattr14);
+            }
+        }
+    }
+
+    fn set_iattrs_update_customer(&self, c_id: i64, iattr00: i64, iattr01: i64) {
+        if let Some(m_al_id) = self.pk_index.get(&c_id) {
+            for (&al_id, &row_index) in m_al_id {
+                assert_eq!(self.c_id.value(row_index), c_id);
+                assert_eq!(self.al_id.value(row_index), al_id);
+
+                unsafe {
+                    self.iattrs[0].set(row_index, iattr00);
+                    self.iattrs[1].set(row_index, iattr01);
+                }
             }
         }
     }
@@ -724,9 +636,9 @@ struct FlightInfo {
     id: i64,
     al_id: i64,
     seats_left: i64,
-    depart_ap_id: i64,
+    _depart_ap_id: i64,
     depart_time: i64,
-    arrive_ap_id: i64,
+    _arrive_ap_id: i64,
     arrive_time: i64,
 }
 
@@ -752,6 +664,8 @@ impl Flight {
     where
         P: AsRef<Path>,
     {
+        println!("Loading FLIGHT...");
+
         let mut fields = vec![
             Field::new("F_ID", DataType::Int64, false),
             Field::new("F_AL_ID", DataType::Int64, false),
@@ -776,61 +690,20 @@ impl Flight {
         let schema = Schema::new(fields);
 
         let file = File::open(path).unwrap();
-        let csv = csv::Reader::new(file, Arc::new(schema), true, None, 1024, None);
+        let mut csv = csv::Reader::new(
+            file,
+            Arc::new(schema),
+            true,
+            None,
+            FLIGHT_RECORDS,
+            None,
+            None,
+        );
 
-        let mut id_builder = Int64Builder::new(0);
-        let mut al_id_builder = Int64Builder::new(0);
-        let mut depart_ap_id_builder = Int64Builder::new(0);
-        let mut depart_time_builder = Int64Builder::new(0);
-        let mut arrive_ap_id_builder = Int64Builder::new(0);
-        let mut arrive_time_builder = Int64Builder::new(0);
-        let mut status_builder = Int64Builder::new(0);
-        let mut base_price_builder = Float64Builder::new(0);
-        let mut seats_total_builder = Int64Builder::new(0);
-        let mut seats_left_builder = Int64Builder::new(0);
-        let mut iattr_builders = (0..30).map(|_| Int64Builder::new(0)).collect::<Vec<_>>();
+        let batch = csv.next().unwrap().unwrap();
 
-        for result in csv {
-            let batch = result.unwrap();
-
-            id_builder.append_data(&[batch.column(0).data()]).unwrap();
-            al_id_builder
-                .append_data(&[batch.column(1).data()])
-                .unwrap();
-            depart_ap_id_builder
-                .append_data(&[batch.column(2).data()])
-                .unwrap();
-            depart_time_builder
-                .append_data(&[batch.column(3).data()])
-                .unwrap();
-            arrive_ap_id_builder
-                .append_data(&[batch.column(4).data()])
-                .unwrap();
-            arrive_time_builder
-                .append_data(&[batch.column(5).data()])
-                .unwrap();
-            status_builder
-                .append_data(&[batch.column(6).data()])
-                .unwrap();
-            base_price_builder
-                .append_data(&[batch.column(7).data()])
-                .unwrap();
-            seats_total_builder
-                .append_data(&[batch.column(8).data()])
-                .unwrap();
-            seats_left_builder
-                .append_data(&[batch.column(9).data()])
-                .unwrap();
-
-            for (i, iattr_builder) in iattr_builders.iter_mut().enumerate() {
-                iattr_builder
-                    .append_data(&[batch.column(i + 10).data()])
-                    .unwrap();
-            }
-        }
-
-        let id = id_builder.finish();
-        let depart_time = depart_time_builder.finish();
+        let id = Int64Array::from(batch.column(0).data());
+        let depart_time = Int64Array::from(batch.column(3).data());
 
         let pk_index = id
             .iter()
@@ -846,26 +719,21 @@ impl Flight {
 
         Flight {
             id,
-            al_id: al_id_builder.finish(),
-            depart_ap_id: depart_ap_id_builder.finish(),
+            al_id: Int64Array::from(batch.column(1).data()),
+            depart_ap_id: Int64Array::from(batch.column(2).data()),
             depart_time,
-            arrive_ap_id: arrive_ap_id_builder.finish(),
-            arrive_time: arrive_time_builder.finish(),
-            status: status_builder.finish(),
-            base_price: base_price_builder.finish(),
-            seats_total: seats_total_builder.finish(),
-            seats_left: Int64ArrayMut(seats_left_builder.finish()),
-            iattrs: iattr_builders.into_iter().map(|mut b| b.finish()).collect(),
+            arrive_ap_id: Int64Array::from(batch.column(4).data()),
+            arrive_time: Int64Array::from(batch.column(5).data()),
+            status: Int64Array::from(batch.column(6).data()),
+            base_price: Float64Array::from(batch.column(7).data()),
+            seats_total: Int64Array::from(batch.column(8).data()),
+            seats_left: Int64ArrayMut(Int64Array::from(batch.column(9).data())),
+            iattrs: (10..40)
+                .map(|i| Int64Array::from(batch.column(i).data()))
+                .collect::<Vec<_>>(),
             pk_index,
             depart_time_index,
         }
-    }
-
-    fn get_seats_left(&self, id: i64) -> i64 {
-        let row_index = self.pk_index[&id];
-        assert_eq!(self.id.value(row_index), id);
-
-        self.seats_left.0.value(row_index)
     }
 
     fn get_airline_and_seats_left(&self, id: i64) -> Option<(i64, i64)> {
@@ -879,14 +747,15 @@ impl Flight {
         })
     }
 
-    fn get_price(&self, id: i64) -> f64 {
-        let row_index = self.pk_index[&id];
-        assert_eq!(self.id.value(row_index), id);
+    fn get_price(&self, id: i64) -> Option<f64> {
+        self.pk_index.get(&id).map(|&row_index| {
+            assert_eq!(self.id.value(row_index), id);
 
-        let base_price = self.base_price.value(row_index);
-        let seats_total = self.seats_total.value(row_index);
-        let seats_left = self.seats_left.0.value(row_index);
-        base_price + (base_price * (1.0 - (seats_left as f64 / seats_total as f64)))
+            let base_price = self.base_price.value(row_index);
+            let seats_total = self.seats_total.value(row_index);
+            let seats_left = self.seats_left.0.value(row_index);
+            base_price + (base_price * (1.0 - (seats_left as f64 / seats_total as f64)))
+        })
     }
 
     fn get_flights(
@@ -914,9 +783,9 @@ impl Flight {
                         id: self.id.value(row_index),
                         al_id: self.al_id.value(row_index),
                         seats_left: self.seats_left.0.value(row_index),
-                        depart_ap_id,
+                        _depart_ap_id: depart_ap_id,
                         depart_time,
-                        arrive_ap_id: self.arrive_ap_id.value(row_index),
+                        _arrive_ap_id: self.arrive_ap_id.value(row_index),
                         arrive_time: self.arrive_time.value(row_index),
                     })
                 } else {
@@ -959,7 +828,17 @@ struct ReservationBlock {
 
 impl ReservationBlock {
     fn new() -> ReservationBlock {
-        unimplemented!()
+        ReservationBlock {
+            valid: BooleanArrayMut(BooleanArray::from(vec![false; BLOCK_CAPACITY])),
+            id: Int64ArrayMut(Int64Array::from(vec![i64::default(); BLOCK_CAPACITY])),
+            c_id: Int64ArrayMut(Int64Array::from(vec![i64::default(); BLOCK_CAPACITY])),
+            f_id: Int64ArrayMut(Int64Array::from(vec![i64::default(); BLOCK_CAPACITY])),
+            seat: Int64ArrayMut(Int64Array::from(vec![i64::default(); BLOCK_CAPACITY])),
+            price: Float64ArrayMut(Float64Array::from(vec![f64::default(); BLOCK_CAPACITY])),
+            iattrs: (0..9)
+                .map(|_| Int64ArrayMut(Int64Array::from(vec![i64::default(); BLOCK_CAPACITY])))
+                .collect(),
+        }
     }
 }
 
@@ -1054,7 +933,10 @@ impl ReservationPartition {
             .get(&f_id)
             .and_then(|m_c_id| m_c_id.get(&c_id))
             .and_then(|m_id| m_id.get(&id))
-            .ok_or(Error::NonexistentKey)?;
+            .ok_or(Error::NonexistentKey(format!(
+                "id: {}, c_id: {}, f_id: {}",
+                id, c_id, f_id
+            )))?;
 
         let block = &self.blocks[block_index];
 
@@ -1088,7 +970,10 @@ impl ReservationPartition {
             .or_default()
             .entry(id)
         {
-            Entry::Occupied(_) => Err(Error::DuplicateKey),
+            Entry::Occupied(_) => Err(Error::DuplicateKey(format!(
+                "id: {}, c_id: {}, f_id: {}",
+                id, c_id, f_id
+            ))),
             Entry::Vacant(entry) => {
                 if self.free.is_empty() {
                     let block_index = self.blocks.len();
@@ -1130,7 +1015,10 @@ impl ReservationPartition {
             .and_then(|m_c_id| m_c_id.get_mut(&c_id))
             .and_then(|m_id| m_id.remove(&id))
         {
-            None => Err(Error::NonexistentKey),
+            None => Err(Error::NonexistentKey(format!(
+                "id: {}, c_id: {}, f_id: {}",
+                id, c_id, f_id
+            ))),
             Some((block_index, row_index)) => {
                 let block = &self.blocks[block_index];
 
@@ -1157,6 +1045,8 @@ impl Reservation {
     where
         P: AsRef<Path>,
     {
+        println!("Loading RESERVATION...");
+
         let partitions = (0..NUM_PARTITIONS)
             .map(|_| Mutex::new(ReservationPartition::new()))
             .collect();
@@ -1182,29 +1072,32 @@ impl Reservation {
         let schema = Schema::new(fields);
 
         let file = File::open(path).unwrap();
-        let csv = csv::Reader::new(file, Arc::new(schema), true, None, BLOCK_CAPACITY, None);
+        let mut csv = csv::Reader::new(
+            file,
+            Arc::new(schema),
+            true,
+            None,
+            RESERVATION_RECORDS,
+            None,
+            None,
+        );
 
-        for result in csv {
-            let batch = result.unwrap();
+        let batch = csv.next().unwrap().unwrap();
 
-            for i in 0..BLOCK_CAPACITY {
-                let id = arrow::array::as_primitive_array::<Int64Type>(batch.column(0)).value(i);
-                let c_id = arrow::array::as_primitive_array::<Int64Type>(batch.column(1)).value(i);
-                let f_id = arrow::array::as_primitive_array::<Int64Type>(batch.column(2)).value(i);
-                let seat = arrow::array::as_primitive_array::<Int64Type>(batch.column(3)).value(i);
-                let price =
-                    arrow::array::as_primitive_array::<Float64Type>(batch.column(4)).value(i);
+        for i in 0..RESERVATION_RECORDS {
+            let id = arrow::array::as_primitive_array::<Int64Type>(batch.column(0)).value(i);
+            let c_id = arrow::array::as_primitive_array::<Int64Type>(batch.column(1)).value(i);
+            let f_id = arrow::array::as_primitive_array::<Int64Type>(batch.column(2)).value(i);
+            let seat = arrow::array::as_primitive_array::<Int64Type>(batch.column(3)).value(i);
+            let price = arrow::array::as_primitive_array::<Float64Type>(batch.column(4)).value(i);
 
-                let iattrs = (5..14)
-                    .map(|j| {
-                        arrow::array::as_primitive_array::<Int64Type>(batch.column(j)).value(i)
-                    })
-                    .collect::<Vec<_>>();
+            let iattrs = (5..14)
+                .map(|j| arrow::array::as_primitive_array::<Int64Type>(batch.column(j)).value(i))
+                .collect::<Vec<_>>();
 
-                reservation
-                    .insert(id, c_id, f_id, seat, price, &iattrs)
-                    .unwrap();
-            }
+            reservation
+                .insert(id, c_id, f_id, seat, price, &iattrs)
+                .unwrap();
         }
 
         reservation
@@ -1265,7 +1158,7 @@ impl Reservation {
 }
 
 pub struct Database {
-    country: Country,
+    _country: Country,
     airport: Airport,
     airport_distance: AirportDistance,
     airline: Airline,
@@ -1278,9 +1171,37 @@ pub struct Database {
 }
 
 impl Database {
+    pub fn new(optimization: OptimizationLevel) -> Database {
+        let country = Country::new("/Users/kpg/data/country.csv");
+        let airport = Airport::new("/Users/kpg/data/airport.csv");
+        let airport_distance = AirportDistance::new("/Users/kpg/data/airport_distance.csv");
+        let airline = Airline::new("/Users/kpg/data/airline.csv");
+        let customer = Customer::new("/Users/kpg/data/customer.csv");
+        let frequent_flyer = FrequentFlyer::new("/Users/kpg/data/frequent_flyer.csv");
+        let flight = Flight::new("/Users/kpg/data/flight.csv");
+        let reservation = Reservation::new("/Users/kpg/data/reservation.csv");
+        let dibs = seats::dibs(optimization);
+        let transaction_counter = AtomicUsize::new(0);
+
+        Database {
+            _country: country,
+            airport,
+            airport_distance,
+            airline,
+            customer,
+            frequent_flyer,
+            flight,
+            reservation,
+            dibs,
+            transaction_counter,
+        }
+    }
+
+    pub fn hello(&self) {}
+
     fn new_transaction(&self) -> Transaction {
         let transaction_id = self.transaction_counter.fetch_add(1, Ordering::Relaxed);
-        Transaction::new(0, transaction_id)
+        Transaction::new(transaction_id, transaction_id)
     }
 }
 
@@ -1301,7 +1222,7 @@ impl SEATSConnection for Database {
                     vec![Value::String(c_id_str.to_string())],
                 )?;
 
-                let c_id = self.customer.get_customer_id_from_str(c_id_str).ok_or(
+                let c_id = self.customer.get_customer_id_from_str(&c_id_str).ok_or(
                     seats::Error::UserAbort(format!("customer {} not found", c_id_str)),
                 )?;
 
@@ -1314,7 +1235,7 @@ impl SEATSConnection for Database {
                     vec![Value::String(ff_c_id_str.to_string())],
                 )?;
 
-                let c_id = self.customer.get_customer_id_from_str(ff_c_id_str).ok_or(
+                let c_id = self.customer.get_customer_id_from_str(&ff_c_id_str).ok_or(
                     seats::Error::UserAbort(format!("customer {} not found", ff_c_id_str)),
                 )?;
 
@@ -1404,9 +1325,11 @@ impl SEATSConnection for Database {
         arrive_aid: i64,
         start_timestamp: i64,
         end_timestamp: i64,
-        distance: f64,
+        distance: i64,
     ) -> Result<Vec<AirportInfo>, seats::Error> {
         let mut transaction = self.new_transaction();
+
+        let distance = distance as f64;
 
         let mut arrive_aids = vec![arrive_aid];
 
@@ -1501,7 +1424,10 @@ impl SEATSConnection for Database {
             vec![Value::I64(f_id)],
         )?;
 
-        let price = self.flight.get_price(f_id);
+        let price = match self.flight.get_price(f_id) {
+            Some(price) => price,
+            None => return Ok(vec![]),
+        };
 
         self.dibs.acquire(
             &mut transaction,
@@ -1623,16 +1549,13 @@ impl SEATSConnection for Database {
         Ok(())
     }
 
-    fn update_customer<S>(
+    fn update_customer(
         &self,
         variant: UpdateCustomerVariant,
-        update_frequent_flyer: bool,
+        update_ff: bool,
         iattr0: i64,
         iattr1: i64,
-    ) -> Result<(), seats::Error>
-    where
-        S: AsRef<str> + Debug,
-    {
+    ) -> Result<(), seats::Error> {
         let mut transaction = self.new_transaction();
 
         let c_id =
@@ -1645,13 +1568,13 @@ impl SEATSConnection for Database {
                         vec![Value::String(c_id_str.to_string())],
                     )?;
 
-                    self.customer.get_customer_id_from_str(c_id_str).ok_or(
+                    self.customer.get_customer_id_from_str(&c_id_str).ok_or(
                         seats::Error::UserAbort(format!("customer {} not found", c_id_str)),
                     )?
                 }
             };
 
-        if update_frequent_flyer {
+        if update_ff {
             self.dibs.acquire(
                 &mut transaction,
                 seats::SET_IATTRS_UPDATE_CUSTOMER_TEMPLATE_ID,
