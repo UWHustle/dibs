@@ -126,11 +126,11 @@ impl Subscriber {
         }
     }
 
-    pub fn scan(&self, byte2: [(u8, u8, u8, u8); 10]) -> impl Iterator<Item = usize> + '_ {
+    pub fn scan<'a>(&'a self, byte2: &'a [(u8, u8, u8, u8)]) -> impl Iterator<Item = usize> + 'a {
         (0..self.col_s_id.len()).filter(move |&row| {
             self.col_byte2
                 .iter()
-                .zip(&byte2)
+                .zip(byte2)
                 .all(|(col_byte2, &(a, b, c, d))| {
                     let value = col_byte2.value(row);
                     (value >= a && value <= b) || (value >= c && value <= d)

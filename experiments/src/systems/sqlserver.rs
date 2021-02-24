@@ -1,4 +1,4 @@
-use crate::benchmarks::tatp;
+use crate::benchmarks::scan::ScanConnection;
 use crate::benchmarks::tatp_sp::TATPSPConnection;
 use crate::systems::odbc;
 use crate::systems::odbc::{
@@ -8,15 +8,12 @@ use crate::systems::odbc::{
 use crate::Connection;
 use itertools::Itertools;
 use odbc_sys::{Dbc, Env, Stmt};
-use rand::seq::SliceRandom;
-use rand::Rng;
 use std::ffi::CString;
+use std::iter;
 
 pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) -> odbc::Result<()> {
     assert!(num_rows > 0);
     assert_eq!(num_rows % 100, 0);
-
-    let mut rng = rand::thread_rng();
 
     let dbc = alloc_dbc(env)?;
     connect(dbc, "DIBS", "SA", "DIBS123!")?;
@@ -86,10 +83,22 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) -> odbc::Result<()> {
              WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_ONLY);",
     )?;
 
-    exec_direct(dbc, "INSERT INTO tatp.subscriber SELECT * FROM tatp.subscriber_backup;")?;
-    exec_direct(dbc, "INSERT INTO tatp.access_info SELECT * FROM tatp.access_info_backup;")?;
-    exec_direct(dbc, "INSERT INTO tatp.special_facility SELECT * FROM tatp.special_facility_backup;")?;
-    exec_direct(dbc, "INSERT INTO tatp.call_forwarding SELECT * FROM tatp.call_forwarding_backup;")?;
+    exec_direct(
+        dbc,
+        "INSERT INTO tatp.subscriber SELECT * FROM tatp.subscriber_backup;",
+    )?;
+    exec_direct(
+        dbc,
+        "INSERT INTO tatp.access_info SELECT * FROM tatp.access_info_backup;",
+    )?;
+    exec_direct(
+        dbc,
+        "INSERT INTO tatp.special_facility SELECT * FROM tatp.special_facility_backup;",
+    )?;
+    exec_direct(
+        dbc,
+        "INSERT INTO tatp.call_forwarding SELECT * FROM tatp.call_forwarding_backup;",
+    )?;
 
     // let mut s_ids = (1..=num_rows).collect::<Vec<_>>();
     // s_ids.shuffle(&mut rng);
@@ -601,6 +610,312 @@ fn execute_with_retry(stmt: *mut Stmt) {
                     panic!("{:?}", diagnostic_record);
                 }
             }
+        }
+    }
+}
+
+pub unsafe fn load_scan(env: *mut Env, num_conjuncts: usize) -> odbc::Result<()> {
+    let dbc = alloc_dbc(env)?;
+    connect(dbc, "DIBS", "SA", "DIBS123!")?;
+
+    exec_direct(dbc, "USE dibs;")?;
+
+    exec_direct(dbc, "DROP TABLE IF EXISTS tatp.subscriber;")?;
+
+    exec_direct(
+        dbc,
+        "CREATE TABLE tatp.subscriber (s_id INTEGER NOT NULL,
+                    bit_1 TINYINT, bit_2 TINYINT, bit_3 TINYINT, bit_4 TINYINT,
+                    bit_5 TINYINT, bit_6 TINYINT, bit_7 TINYINT, bit_8 TINYINT,
+                    bit_9 TINYINT, bit_10 TINYINT,
+                    hex_1 TINYINT, hex_2 TINYINT, hex_3 TINYINT, hex_4 TINYINT,
+                    hex_5 TINYINT, hex_6 TINYINT, hex_7 TINYINT, hex_8 TINYINT,
+                    hex_9 TINYINT, hex_10 TINYINT,
+                    byte2_1 TINYINT, byte2_2 TINYINT, byte2_3 TINYINT, byte2_4 TINYINT,
+                    byte2_5 TINYINT, byte2_6 TINYINT, byte2_7 TINYINT, byte2_8 TINYINT,
+                    byte2_9 TINYINT, byte2_10 TINYINT,
+                    msc_location BIGINT, vlr_location BIGINT,
+                    PRIMARY KEY NONCLUSTERED (s_id))
+                WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_ONLY);",
+    )?;
+
+    exec_direct(
+        dbc,
+        "INSERT INTO tatp.subscriber SELECT * FROM tatp.subscriber_backup;",
+    )?;
+
+    let create_procedure = |name, params, sql| {
+        exec_direct(
+            dbc,
+            &format!(
+                "CREATE PROCEDURE {} ({})
+                WITH NATIVE_COMPILATION, SCHEMABINDING, EXECUTE AS OWNER
+                AS BEGIN ATOMIC WITH
+                (TRANSACTION ISOLATION LEVEL = SERIALIZABLE, LANGUAGE = 'english')
+                    {}
+                END",
+                name, params, sql,
+            ),
+        )
+    };
+
+    create_procedure(
+        "tatp.get_subscriber_data_scan",
+        (1..=num_conjuncts)
+            .map(|i| {
+                format!(
+                    "@byte2_{0}_a TINYINT, @byte2_{0}_b TINYINT,
+                    @byte2_{0}_c TINYINT, @byte2_{0}_d TINYINT",
+                    i
+                )
+            })
+            .join(", "),
+        format!(
+            "SELECT
+                bit_1, bit_2, bit_3, bit_4, bit_5,
+                bit_6, bit_7, bit_8, bit_9, bit_10,
+                hex_1, hex_2, hex_3, hex_4, hex_5,
+                hex_6, hex_7, hex_8, hex_9, hex_10,
+                byte2_1, byte2_2, byte2_3, byte2_4, byte2_5,
+                byte2_6, byte2_7, byte2_8, byte2_9, byte2_10,
+                msc_location, vlr_location
+            FROM tatp.subscriber
+            WHERE {};",
+            (1..=num_conjuncts)
+                .map(|i| format!(
+                    "((byte2_{0} BETWEEN @byte2_{0}_a AND @byte2_{0}_b)
+                        OR (byte2_{0} BETWEEN @byte2_{0}_c AND @byte2_{0}_d))",
+                    i
+                ))
+                .join(" AND ")
+        ),
+    )?;
+
+    create_procedure(
+        "tatp.update_subscriber_data_scan",
+        (1..=num_conjuncts)
+            .map(|i| {
+                format!(
+                    "@byte2_{0}_a TINYINT, @byte2_{0}_b TINYINT,
+                    @byte2_{0}_c TINYINT, @byte2_{0}_d TINYINT",
+                    i
+                )
+            })
+            .chain(iter::once("@vlr_location BIGINT".to_string()))
+            .join(", "),
+        format!(
+            "UPDATE tatp.subscriber
+            SET vlr_location = @vlr_location
+            WHERE {};",
+            (1..=num_conjuncts)
+                .map(|i| format!(
+                    "((byte2_{0} BETWEEN @byte2_{0}_a AND @byte2_{0}_b)
+                        OR (byte2_{0} BETWEEN @byte2_{0}_c AND @byte2_{0}_d))",
+                    i
+                ))
+                .join("AND")
+        ),
+    )?;
+
+    disconnect(dbc)?;
+    free_dbc(dbc)?;
+
+    Ok(())
+}
+
+pub struct SQLServerScanConnection {
+    dbc: *mut Dbc,
+    get_subscriber_data_scan_stmt: *mut Stmt,
+    update_subscriber_data_scan_stmt: *mut Stmt,
+}
+
+impl SQLServerScanConnection {
+    pub fn new(env: *mut Env, num_conjuncts: usize) -> odbc::Result<SQLServerScanConnection> {
+        unsafe {
+            let dbc = alloc_dbc(env)?;
+            connect(dbc, "DIBS", "SA", "DIBS123!")?;
+
+            exec_direct(dbc, "USE dibs;")?;
+
+            let get_subscriber_data_scan_stmt = alloc_stmt(dbc)?;
+            prepare(
+                get_subscriber_data_scan_stmt,
+                &format!(
+                    "{{ CALL tatp.get_subscriber_data_scan ({}) }}",
+                    (0..num_conjuncts * 4).map(|_| "?").join(", ")
+                ),
+            )?;
+
+            let update_subscriber_data_scan_stmt = alloc_stmt(dbc)?;
+            prepare(
+                update_subscriber_data_scan_stmt,
+                &format!(
+                    "{{ CALL tatp.update_subscriber_data_scan ({}) }}",
+                    (0..num_conjuncts * 4 + 1).map(|_| "?").join(", ")
+                ),
+            )?;
+
+            Ok(SQLServerScanConnection {
+                dbc,
+                get_subscriber_data_scan_stmt,
+                update_subscriber_data_scan_stmt,
+            })
+        }
+    }
+}
+
+impl Connection for SQLServerScanConnection {
+    fn begin(&mut self) {}
+
+    fn commit(&mut self) {}
+
+    fn rollback(&mut self) {}
+
+    fn savepoint(&mut self) {}
+}
+
+impl ScanConnection for SQLServerScanConnection {
+    fn get_subscriber_data_scan(
+        &self,
+        byte2: &[(u8, u8, u8, u8)],
+    ) -> Vec<([bool; 10], [u8; 10], [u8; 10], u32, u32)> {
+        unsafe {
+            for (i, byte2_i) in byte2.iter().enumerate() {
+                bind_parameter(
+                    self.get_subscriber_data_scan_stmt,
+                    (i * 4 + 1) as u16,
+                    &byte2_i.0,
+                )
+                .unwrap();
+
+                bind_parameter(
+                    self.get_subscriber_data_scan_stmt,
+                    (i * 4 + 2) as u16,
+                    &byte2_i.1,
+                )
+                .unwrap();
+
+                bind_parameter(
+                    self.get_subscriber_data_scan_stmt,
+                    (i * 4 + 3) as u16,
+                    &byte2_i.2,
+                )
+                .unwrap();
+
+                bind_parameter(
+                    self.get_subscriber_data_scan_stmt,
+                    (i * 4 + 4) as u16,
+                    &byte2_i.3,
+                )
+                .unwrap();
+            }
+
+            execute_with_retry(self.get_subscriber_data_scan_stmt);
+
+            if fetch(self.get_subscriber_data_scan_stmt).unwrap() {
+                let mut bit = [false; 10];
+                for i in 0..10 {
+                    let mut bit_u8 = 0u8;
+                    get_data(
+                        self.get_subscriber_data_scan_stmt,
+                        i as u16 + 1,
+                        &mut bit_u8,
+                    )
+                    .unwrap();
+                    bit[i] = bit_u8 == 1;
+                }
+
+                let mut hex = [0; 10];
+                for i in 0..10 {
+                    get_data(
+                        self.get_subscriber_data_scan_stmt,
+                        i as u16 + 11,
+                        &mut hex[i],
+                    )
+                    .unwrap();
+                }
+
+                let mut byte2 = [0; 10];
+                for i in 0..10 {
+                    get_data(
+                        self.get_subscriber_data_scan_stmt,
+                        i as u16 + 21,
+                        &mut byte2[i],
+                    )
+                    .unwrap();
+                }
+
+                let mut msc_location = 0u32;
+                get_data(self.get_subscriber_data_scan_stmt, 31, &mut msc_location).unwrap();
+
+                let mut vlr_location = 0u32;
+                get_data(self.get_subscriber_data_scan_stmt, 32, &mut vlr_location).unwrap();
+
+                reset_stmt(self.get_subscriber_data_scan_stmt).unwrap();
+
+                vec![(bit, hex, byte2, msc_location, vlr_location)]
+            } else {
+                reset_stmt(self.get_subscriber_data_scan_stmt).unwrap();
+
+                vec![]
+            }
+        }
+    }
+
+    fn update_subscriber_location_scan(&self, vlr_location: u32, byte2: &[(u8, u8, u8, u8)]) {
+        unsafe {
+            for (i, byte2_i) in byte2.iter().enumerate() {
+                bind_parameter(
+                    self.update_subscriber_data_scan_stmt,
+                    (i * 4 + 1) as u16,
+                    &byte2_i.0,
+                )
+                .unwrap();
+
+                bind_parameter(
+                    self.update_subscriber_data_scan_stmt,
+                    (i * 4 + 2) as u16,
+                    &byte2_i.1,
+                )
+                .unwrap();
+
+                bind_parameter(
+                    self.update_subscriber_data_scan_stmt,
+                    (i * 4 + 3) as u16,
+                    &byte2_i.2,
+                )
+                .unwrap();
+
+                bind_parameter(
+                    self.update_subscriber_data_scan_stmt,
+                    (i * 4 + 4) as u16,
+                    &byte2_i.3,
+                )
+                .unwrap();
+            }
+
+            bind_parameter(
+                self.update_subscriber_data_scan_stmt,
+                (byte2.len() * 4 + 1) as u16,
+                &vlr_location,
+            )
+            .unwrap();
+
+            execute_with_retry(self.update_subscriber_data_scan_stmt);
+
+            reset_stmt(self.update_subscriber_data_scan_stmt).unwrap();
+        }
+    }
+}
+
+impl Drop for SQLServerScanConnection {
+    fn drop(&mut self) {
+        unsafe {
+            free_stmt(self.get_subscriber_data_scan_stmt).unwrap();
+            free_stmt(self.update_subscriber_data_scan_stmt).unwrap();
+
+            disconnect(self.dbc).unwrap();
+            free_dbc(self.dbc).unwrap();
         }
     }
 }

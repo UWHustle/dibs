@@ -43,7 +43,7 @@ fn main() {
         workers.push(Box::new(StandardWorker::new(
             worker_id,
             Some(Arc::clone(&dibs)),
-            ScanGenerator::new(select_mix, range),
+            ScanGenerator::new(select_mix, range, num_conjuncts),
             ArrowScanConnection::new(Arc::clone(&db)),
         )))
     }

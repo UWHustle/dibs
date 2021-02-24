@@ -25,7 +25,7 @@ pub trait ScanConnection {
     /// ```
     fn get_subscriber_data_scan(
         &self,
-        byte2: [(u8, u8, u8, u8); 10],
+        byte2: &[(u8, u8, u8, u8)],
     ) -> Vec<([bool; 10], [u8; 10], [u8; 10], u32, u32)>;
 
     /// Update subscriber location scan.
@@ -43,20 +43,20 @@ pub trait ScanConnection {
     ///     AND ((byte2_9 BETWEEN ? AND ?) OR (byte2_9 BETWEEN ? AND ?))
     ///     AND ((byte2_10 BETWEEN ? AND ?) OR (byte2_10 BETWEEN ? AND ?))
     /// ```
-    fn update_subscriber_location_scan(&self, vlr_location: u32, byte2: [(u8, u8, u8, u8); 10]);
+    fn update_subscriber_location_scan(&self, vlr_location: u32, byte2: &[(u8, u8, u8, u8)]);
 }
 
 pub enum ScanProcedure {
     GetSubscriberDataScan {
-        byte2: [(u8, u8, u8, u8); 10],
+        byte2: Vec<(u8, u8, u8, u8)>,
     },
     UpdateSubscriberLocationScan {
         vlr_location: u32,
-        byte2: [(u8, u8, u8, u8); 10],
+        byte2: Vec<(u8, u8, u8, u8)>,
     },
 }
 
-fn byte2_to_arguments(byte2: &[(u8, u8, u8, u8); 10]) -> Vec<Value> {
+fn byte2_to_arguments(byte2: &[(u8, u8, u8, u8)]) -> Vec<Value> {
     let mut arguments = Vec::with_capacity(40);
 
     for b in byte2 {
@@ -93,7 +93,7 @@ where
                     d.acquire(transaction, 0, byte2_to_arguments(&byte2))?;
                 }
 
-                connection.get_subscriber_data_scan(*byte2);
+                connection.get_subscriber_data_scan(byte2);
             }
             ScanProcedure::UpdateSubscriberLocationScan {
                 vlr_location,
@@ -103,7 +103,7 @@ where
                     d.acquire(transaction, 1, byte2_to_arguments(&byte2))?;
                 }
 
-                connection.update_subscriber_location_scan(*vlr_location, *byte2);
+                connection.update_subscriber_location_scan(*vlr_location, byte2);
             }
         }
 
@@ -114,24 +114,28 @@ where
 pub struct ScanGenerator {
     select_mix: f64,
     range: u8,
+    num_conjuncts: usize,
 }
 
 impl ScanGenerator {
-    pub fn new(select_mix: f64, range: u8) -> ScanGenerator {
-        ScanGenerator { select_mix, range }
+    pub fn new(select_mix: f64, range: u8, num_conjuncts: usize) -> ScanGenerator {
+        ScanGenerator {
+            select_mix,
+            range,
+            num_conjuncts,
+        }
     }
 
-    fn gen_byte2(&self, rng: &mut ThreadRng) -> [(u8, u8, u8, u8); 10] {
-        let mut arguments = [(0, 0, 0, 0); 10];
-
-        for argument in &mut arguments {
-            argument.0 = rng.gen_range(0, u8::max_value() - self.range);
-            argument.1 = argument.0 + self.range;
-            argument.2 = rng.gen_range(0, u8::max_value() - self.range);
-            argument.3 = argument.2 + self.range;
-        }
-
-        arguments
+    fn gen_byte2(&self, rng: &mut ThreadRng) -> Vec<(u8, u8, u8, u8)> {
+        (0..self.num_conjuncts)
+            .map(|_| {
+                let arg_0 = rng.gen_range(0, u8::max_value() - self.range);
+                let arg_1 = arg_0 + self.range;
+                let arg_2 = rng.gen_range(0, u8::max_value() - self.range);
+                let arg_3 = arg_2 + self.range;
+                (arg_0, arg_1, arg_2, arg_3)
+            })
+            .collect()
     }
 }
 

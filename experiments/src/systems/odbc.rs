@@ -159,7 +159,7 @@ pub unsafe fn prepare(stmt: *mut Stmt, sql: &str) -> Result<()> {
     }
 }
 
-pub unsafe fn bind_parameter<T>(stmt: *mut Stmt, parameter_number: u16, value: &mut T) -> Result<()>
+pub unsafe fn bind_parameter<T>(stmt: *mut Stmt, parameter_number: u16, value: &T) -> Result<()>
 where
     T: Parameter,
 {
@@ -239,9 +239,9 @@ pub trait Parameter {
     fn parameter_type(&self) -> SqlDataType;
     fn column_size(&self) -> usize;
     fn decimal_digits(&self) -> i16;
-    fn parameter_value_ptr(&mut self) -> *mut c_void;
+    fn parameter_value_ptr(&self) -> *mut c_void;
     fn buffer_length(&self) -> isize;
-    fn str_len_or_ind_ptr(&mut self) -> *mut isize;
+    fn str_len_or_ind_ptr(&self) -> *mut isize;
 }
 
 impl Parameter for u8 {
@@ -261,15 +261,15 @@ impl Parameter for u8 {
         0
     }
 
-    fn parameter_value_ptr(&mut self) -> *mut c_void {
-        self as *mut u8 as *mut c_void
+    fn parameter_value_ptr(&self) -> *mut c_void {
+        self as *const u8 as *mut c_void
     }
 
     fn buffer_length(&self) -> isize {
         1
     }
 
-    fn str_len_or_ind_ptr(&mut self) -> *mut isize {
+    fn str_len_or_ind_ptr(&self) -> *mut isize {
         ptr::null_mut()
     }
 }
@@ -291,15 +291,15 @@ impl Parameter for u32 {
         0
     }
 
-    fn parameter_value_ptr(&mut self) -> *mut c_void {
-        self as *mut u32 as *mut c_void
+    fn parameter_value_ptr(&self) -> *mut c_void {
+        self as *const u32 as *mut c_void
     }
 
     fn buffer_length(&self) -> isize {
         4
     }
 
-    fn str_len_or_ind_ptr(&mut self) -> *mut isize {
+    fn str_len_or_ind_ptr(&self) -> *mut isize {
         ptr::null_mut()
     }
 }
@@ -333,15 +333,15 @@ impl Parameter for Char<'_> {
         0
     }
 
-    fn parameter_value_ptr(&mut self) -> *mut c_void {
-        self.bytes.as_mut_ptr() as *mut c_void
+    fn parameter_value_ptr(&self) -> *mut c_void {
+        self.bytes.as_ptr() as *mut c_void
     }
 
     fn buffer_length(&self) -> isize {
         self.len + 1
     }
 
-    fn str_len_or_ind_ptr(&mut self) -> *mut isize {
-        &mut self.len
+    fn str_len_or_ind_ptr(&self) -> *mut isize {
+        &self.len as *const isize as *mut isize
     }
 }

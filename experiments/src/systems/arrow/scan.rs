@@ -35,7 +35,7 @@ impl Connection for ArrowScanConnection {
 impl ScanConnection for ArrowScanConnection {
     fn get_subscriber_data_scan(
         &self,
-        byte2: [(u8, u8, u8, u8); 10],
+        byte2: &[(u8, u8, u8, u8)],
     ) -> Vec<([bool; 10], [u8; 10], [u8; 10], u32, u32)> {
         self.db
             .subscriber
@@ -44,7 +44,7 @@ impl ScanConnection for ArrowScanConnection {
             .collect()
     }
 
-    fn update_subscriber_location_scan(&self, vlr_location: u32, byte2: [(u8, u8, u8, u8); 10]) {
+    fn update_subscriber_location_scan(&self, vlr_location: u32, byte2: &[(u8, u8, u8, u8)]) {
         for row in self.db.subscriber.scan(byte2) {
             self.db.subscriber.update_row_location(row, vlr_location);
         }
