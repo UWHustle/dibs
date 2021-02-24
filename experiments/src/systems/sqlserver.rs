@@ -36,9 +36,8 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) -> odbc::Result<()> {
     exec_direct(dbc, "DROP TABLE IF EXISTS tatp.access_info;")?;
     exec_direct(dbc, "DROP TABLE IF EXISTS tatp.subscriber;")?;
 
-    exec_direct(dbc, "DROP SCHEMA IF EXISTS tatp")?;
-
-    exec_direct(dbc, "CREATE SCHEMA tatp")?;
+    // exec_direct(dbc, "DROP SCHEMA IF EXISTS tatp")?;
+    // exec_direct(dbc, "CREATE SCHEMA tatp")?;
 
     exec_direct(
         dbc,
@@ -87,121 +86,126 @@ pub unsafe fn load_tatp(env: *mut Env, num_rows: u32) -> odbc::Result<()> {
              WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_ONLY);",
     )?;
 
-    let mut s_ids = (1..=num_rows).collect::<Vec<_>>();
-    s_ids.shuffle(&mut rng);
+    exec_direct(dbc, "INSERT INTO tatp.subscriber SELECT * FROM tatp.subscriber_backup;")?;
+    exec_direct(dbc, "INSERT INTO tatp.access_info SELECT * FROM tatp.access_info_backup;")?;
+    exec_direct(dbc, "INSERT INTO tatp.special_facility SELECT * FROM tatp.special_facility_backup;")?;
+    exec_direct(dbc, "INSERT INTO tatp.call_forwarding SELECT * FROM tatp.call_forwarding_backup;")?;
 
-    let ai_types = s_ids
-        .iter()
-        .flat_map(|&s_id| {
-            let num_ai_types = rng.gen_range(1, 5);
-            [1, 2, 3, 4]
-                .choose_multiple(&mut rng, num_ai_types)
-                .map(move |&ai_type| (s_id, ai_type))
-        })
-        .collect::<Vec<_>>();
+    // let mut s_ids = (1..=num_rows).collect::<Vec<_>>();
+    // s_ids.shuffle(&mut rng);
 
-    let sf_types = s_ids
-        .iter()
-        .flat_map(|&s_id| {
-            let num_sf_types = rng.gen_range(1, 5);
-            [1, 2, 3, 4]
-                .choose_multiple(&mut rng, num_sf_types)
-                .map(move |&sf_type| (s_id, sf_type))
-        })
-        .collect::<Vec<_>>();
+    // let ai_types = s_ids
+    //     .iter()
+    //     .flat_map(|&s_id| {
+    //         let num_ai_types = rng.gen_range(1, 5);
+    //         [1, 2, 3, 4]
+    //             .choose_multiple(&mut rng, num_ai_types)
+    //             .map(move |&ai_type| (s_id, ai_type))
+    //     })
+    //     .collect::<Vec<_>>();
 
-    let cf_start_times = sf_types
-        .iter()
-        .flat_map(|&(s_id, sf_type)| {
-            let num_start_times = rng.gen_range(0, 4);
-            [0, 8, 16]
-                .choose_multiple(&mut rng, num_start_times)
-                .map(move |&start_time| (s_id, sf_type, start_time))
-        })
-        .collect::<Vec<_>>();
+    // let sf_types = s_ids
+    //     .iter()
+    //     .flat_map(|&s_id| {
+    //         let num_sf_types = rng.gen_range(1, 5);
+    //         [1, 2, 3, 4]
+    //             .choose_multiple(&mut rng, num_sf_types)
+    //             .map(move |&sf_type| (s_id, sf_type))
+    //     })
+    //     .collect::<Vec<_>>();
 
-    for s_chunk in s_ids.chunks(1000) {
-        exec_direct(
-            dbc,
-            &format!(
-                "INSERT INTO tatp.subscriber VALUES {};",
-                s_chunk
-                    .iter()
-                    .map(|&s_id| format!(
-                        "({},{},{},{},{},{})",
-                        s_id,
-                        (0..10).map(|_| rng.gen_range(0, 2)).join(","),
-                        (0..10).map(|_| rng.gen_range(0, 16)).join(","),
-                        (0..10).map(|_| rng.gen_range(0, 256)).join(","),
-                        rng.gen::<u32>(),
-                        rng.gen::<u32>(),
-                    ))
-                    .join(",")
-            ),
-        )?;
-    }
+    // let cf_start_times = sf_types
+    //     .iter()
+    //     .flat_map(|&(s_id, sf_type)| {
+    //         let num_start_times = rng.gen_range(0, 4);
+    //         [0, 8, 16]
+    //             .choose_multiple(&mut rng, num_start_times)
+    //             .map(move |&start_time| (s_id, sf_type, start_time))
+    //     })
+    //     .collect::<Vec<_>>();
 
-    for ai_chunk in ai_types.chunks(1000) {
-        exec_direct(
-            dbc,
-            &format!(
-                "INSERT INTO tatp.access_info VALUES {};",
-                ai_chunk
-                    .iter()
-                    .map(|&(s_id, ai_type)| format!(
-                        "({},{},{},{},'{}','{}')",
-                        s_id,
-                        ai_type,
-                        rng.gen::<u8>(),
-                        rng.gen::<u8>(),
-                        tatp::uppercase_alphabetic_string(3, &mut rng),
-                        tatp::uppercase_alphabetic_string(5, &mut rng)
-                    ))
-                    .join(",")
-            ),
-        )?;
-    }
+    // for s_chunk in s_ids.chunks(1000) {
+    //     exec_direct(
+    //         dbc,
+    //         &format!(
+    //             "INSERT INTO tatp.subscriber VALUES {};",
+    //             s_chunk
+    //                 .iter()
+    //                 .map(|&s_id| format!(
+    //                     "({},{},{},{},{},{})",
+    //                     s_id,
+    //                     (0..10).map(|_| rng.gen_range(0, 2)).join(","),
+    //                     (0..10).map(|_| rng.gen_range(0, 16)).join(","),
+    //                     (0..10).map(|_| rng.gen_range(0, 256)).join(","),
+    //                     rng.gen::<u32>(),
+    //                     rng.gen::<u32>(),
+    //                 ))
+    //                 .join(",")
+    //         ),
+    //     )?;
+    // }
 
-    for sf_chunk in sf_types.chunks(1000) {
-        exec_direct(
-            dbc,
-            &format!(
-                "INSERT INTO tatp.special_facility VALUES {};",
-                sf_chunk
-                    .iter()
-                    .map(|&(s_id, sf_type)| format!(
-                        "({},{},{},{},{},'{}')",
-                        s_id,
-                        sf_type,
-                        if rng.gen_bool(0.85) { 1 } else { 0 },
-                        rng.gen::<u8>(),
-                        rng.gen::<u8>(),
-                        tatp::uppercase_alphabetic_string(5, &mut rng),
-                    ))
-                    .join(",")
-            ),
-        )?;
-    }
+    // for ai_chunk in ai_types.chunks(1000) {
+    //     exec_direct(
+    //         dbc,
+    //         &format!(
+    //             "INSERT INTO tatp.access_info VALUES {};",
+    //             ai_chunk
+    //                 .iter()
+    //                 .map(|&(s_id, ai_type)| format!(
+    //                     "({},{},{},{},'{}','{}')",
+    //                     s_id,
+    //                     ai_type,
+    //                     rng.gen::<u8>(),
+    //                     rng.gen::<u8>(),
+    //                     tatp::uppercase_alphabetic_string(3, &mut rng),
+    //                     tatp::uppercase_alphabetic_string(5, &mut rng)
+    //                 ))
+    //                 .join(",")
+    //         ),
+    //     )?;
+    // }
 
-    for cf_chunk in cf_start_times.chunks(1000) {
-        exec_direct(
-            dbc,
-            &format!(
-                "INSERT INTO tatp.call_forwarding VALUES {}",
-                cf_chunk
-                    .iter()
-                    .map(|&(s_id, sf_type, start_time)| format!(
-                        "({},{},{},{},'{}')",
-                        s_id,
-                        sf_type,
-                        start_time,
-                        start_time + rng.gen_range(1, 9),
-                        tatp::uppercase_alphabetic_string(15, &mut rng)
-                    ))
-                    .join(",")
-            ),
-        )?;
-    }
+    // for sf_chunk in sf_types.chunks(1000) {
+    //     exec_direct(
+    //         dbc,
+    //         &format!(
+    //             "INSERT INTO tatp.special_facility VALUES {};",
+    //             sf_chunk
+    //                 .iter()
+    //                 .map(|&(s_id, sf_type)| format!(
+    //                     "({},{},{},{},{},'{}')",
+    //                     s_id,
+    //                     sf_type,
+    //                     if rng.gen_bool(0.85) { 1 } else { 0 },
+    //                     rng.gen::<u8>(),
+    //                     rng.gen::<u8>(),
+    //                     tatp::uppercase_alphabetic_string(5, &mut rng),
+    //                 ))
+    //                 .join(",")
+    //         ),
+    //     )?;
+    // }
+
+    // for cf_chunk in cf_start_times.chunks(1000) {
+    //     exec_direct(
+    //         dbc,
+    //         &format!(
+    //             "INSERT INTO tatp.call_forwarding VALUES {}",
+    //             cf_chunk
+    //                 .iter()
+    //                 .map(|&(s_id, sf_type, start_time)| format!(
+    //                     "({},{},{},{},'{}')",
+    //                     s_id,
+    //                     sf_type,
+    //                     start_time,
+    //                     start_time + rng.gen_range(1, 9),
+    //                     tatp::uppercase_alphabetic_string(15, &mut rng)
+    //                 ))
+    //                 .join(",")
+    //         ),
+    //     )?;
+    // }
 
     let create_procedure = |name, params, sql| {
         exec_direct(

@@ -383,6 +383,6 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
         &templates,
         optimization,
         usize::max_value(),
-        Duration::from_millis(100),
+        Duration::from_millis(10),
     )
 }

@@ -28,7 +28,7 @@ const AIRPORT_DISTANCE_RECORDS: usize = 40755;
 const CUSTOMER_RECORDS: usize = 1000000;
 const FLIGHT_RECORDS: usize = 763951;
 const FREQUENT_FLYER_RECORDS: usize = 2162434;
-const RESERVATION_RECORDS: usize = 1144314;
+const RESERVATION_RECORDS: usize = 1144313;
 
 #[derive(Debug)]
 enum Error {
@@ -1172,14 +1172,14 @@ pub struct Database {
 
 impl Database {
     pub fn new(optimization: OptimizationLevel) -> Database {
-        let country = Country::new("/Users/kpg/data/country.csv");
-        let airport = Airport::new("/Users/kpg/data/airport.csv");
-        let airport_distance = AirportDistance::new("/Users/kpg/data/airport_distance.csv");
-        let airline = Airline::new("/Users/kpg/data/airline.csv");
-        let customer = Customer::new("/Users/kpg/data/customer.csv");
-        let frequent_flyer = FrequentFlyer::new("/Users/kpg/data/frequent_flyer.csv");
-        let flight = Flight::new("/Users/kpg/data/flight.csv");
-        let reservation = Reservation::new("/Users/kpg/data/reservation.csv");
+        let country = Country::new("/users/gaffneyk/data/country.csv");
+        let airport = Airport::new("/users/gaffneyk/data/airport.csv");
+        let airport_distance = AirportDistance::new("/users/gaffneyk/data/airport_distance.csv");
+        let airline = Airline::new("/users/gaffneyk/data/airline.csv");
+        let customer = Customer::new("/users/gaffneyk/data/customer.csv");
+        let frequent_flyer = FrequentFlyer::new("/users/gaffneyk/data/frequent_flyer.csv");
+        let flight = Flight::new("/users/gaffneyk/data/flight.csv");
+        let reservation = Reservation::new("/users/gaffneyk/data/reservation.csv");
         let dibs = seats::dibs(optimization);
         let transaction_counter = AtomicUsize::new(0);
 
