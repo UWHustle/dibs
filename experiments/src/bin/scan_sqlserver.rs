@@ -5,7 +5,6 @@ use dibs_experiments::systems::sqlserver::SQLServerScanConnection;
 use dibs_experiments::worker::{StandardWorker, Worker};
 use dibs_experiments::{runner, systems};
 use std::str::FromStr;
-use std::sync::Arc;
 
 fn main() {
     let matches = App::new("Scans on SQL Server")

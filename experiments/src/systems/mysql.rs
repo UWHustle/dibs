@@ -8,6 +8,8 @@ use rand::distributions::Alphanumeric;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
+use std::time;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum IsolationMechanism {
@@ -83,10 +85,16 @@ pub struct MySQLYCSBConnection {
     conn: Conn,
     select_user_stmts: Vec<Statement>,
     update_user_stmts: Vec<Statement>,
+    global_latencies: Arc<Mutex<Vec<time::Duration>>>,
+    local_latencies: Vec<time::Duration>,
+    current_start: Option<time::Instant>,
 }
 
 impl MySQLYCSBConnection {
-    pub fn new(isolation: IsolationMechanism) -> MySQLYCSBConnection {
+    pub fn new(
+        isolation: IsolationMechanism,
+        global_latencies: Arc<Mutex<Vec<time::Duration>>>,
+    ) -> MySQLYCSBConnection {
         let mut conn =
             Conn::new(OptsBuilder::new().user(Some("dibs")).db_name(Some("ycsb"))).unwrap();
 
@@ -125,17 +133,24 @@ impl MySQLYCSBConnection {
             conn,
             select_user_stmts,
             update_user_stmts,
+            global_latencies,
+            local_latencies: vec![],
+            current_start: None,
         }
     }
 }
 
 impl Connection for MySQLYCSBConnection {
     fn begin(&mut self) {
+        self.current_start = Some(time::Instant::now());
         self.conn.query_drop("START TRANSACTION").unwrap();
     }
 
     fn commit(&mut self) {
         self.conn.query_drop("COMMIT").unwrap();
+        let stop = time::Instant::now();
+        self.local_latencies
+            .push(stop - self.current_start.unwrap());
     }
 
     fn rollback(&mut self) {
@@ -165,5 +180,14 @@ impl YCSBConnection for MySQLYCSBConnection {
                 },
             )
             .unwrap();
+    }
+}
+
+impl Drop for MySQLYCSBConnection {
+    fn drop(&mut self) {
+        self.global_latencies
+            .lock()
+            .unwrap()
+            .append(&mut self.local_latencies);
     }
 }

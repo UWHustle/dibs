@@ -5,7 +5,7 @@ use dibs_experiments::systems::mysql::{IsolationMechanism, MySQLYCSBConnection};
 use dibs_experiments::worker::{StandardWorker, Worker};
 use dibs_experiments::{runner, systems};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn main() {
     let matches = App::new("YCSB on MySQL")
@@ -35,6 +35,7 @@ fn main() {
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
     let dibs = Arc::new(ycsb::dibs(optimization));
+    let global_latencies = Arc::new(Mutex::new(vec![]));
 
     systems::mysql::load_ycsb(num_rows, field_size);
 
@@ -58,7 +59,7 @@ fn main() {
                     select_mix,
                     num_statements_per_transaction,
                 ),
-                MySQLYCSBConnection::new(isolation),
+                MySQLYCSBConnection::new(isolation, Arc::clone(&global_latencies)),
             ))
         } else {
             Box::new(StandardWorker::new(
@@ -71,10 +72,20 @@ fn main() {
                     num_statements_per_transaction,
                     skew,
                 ),
-                MySQLYCSBConnection::new(isolation),
+                MySQLYCSBConnection::new(isolation, Arc::clone(&global_latencies)),
             ))
         });
     }
 
     runner::run(workers);
+
+    let mut latencies = global_latencies.lock().unwrap();
+    latencies.sort_unstable();
+
+    if latencies.len() > 0 {
+        println!(
+            "99th percentile latency: {} µs",
+            latencies[latencies.len() * 99 / 100].as_micros()
+        );
+    }
 }

@@ -48,8 +48,8 @@ pub extern "system" fn Java_com_oltpbenchmark_benchmarks_seats_procedures_Delete
 
     match CONN.delete_reservation(variant, f_id) {
         Ok(_) => 0,
-        Err(e) => {
-//            println!("{:?}", e);
+        Err(_) => {
+            //            println!("{:?}", e);
             1
         }
     }
@@ -87,8 +87,8 @@ pub extern "system" fn Java_com_oltpbenchmark_benchmarks_seats_procedures_FindFl
 
             ret
         }
-        Err(e) => {
-//            println!("{:?}", e);
+        Err(_) => {
+            //            println!("{:?}", e);
 
             let ret = env.new_long_array(1).unwrap();
 
@@ -121,8 +121,8 @@ pub extern "system" fn Java_com_oltpbenchmark_benchmarks_seats_procedures_FindOp
 
             ret
         }
-        Err(e) => {
-//            println!("{:?}", e);
+        Err(_) => {
+            //            println!("{:?}", e);
 
             let ret = env.new_long_array(1).unwrap();
 
@@ -149,8 +149,8 @@ pub extern "system" fn Java_com_oltpbenchmark_benchmarks_seats_procedures_NewRes
 
     match CONN.new_reservation(r_id, c_id, f_id, seat, price, &iattrs) {
         Ok(_) => 0,
-        Err(e) => {
-//            println!("{:?}", e);
+        Err(_) => {
+            //            println!("{:?}", e);
             1
         }
     }
@@ -179,8 +179,8 @@ pub extern "system" fn Java_com_oltpbenchmark_benchmarks_seats_procedures_Update
 
     match CONN.update_customer(variant, update_ff != -1, iattr0, iattr1) {
         Ok(_) => 0,
-        Err(e) => {
-//            println!("{:?}", e);
+        Err(_) => {
+            //            println!("{:?}", e);
             1
         }
     }
@@ -199,8 +199,8 @@ pub extern "system" fn Java_com_oltpbenchmark_benchmarks_seats_procedures_Update
 ) -> jlong {
     match CONN.update_reservation(r_id, c_id, f_id, seat, iattr_idx as usize, iattr_val) {
         Ok(_) => 0,
-        Err(e) => {
-//            println!("{:?}", e);
+        Err(_) => {
+            //            println!("{:?}", e);
             1
         }
     }

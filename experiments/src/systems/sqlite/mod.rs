@@ -8,6 +8,8 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 use rusqlite::{params, ErrorCode, Statement};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time;
 use std::time::Duration;
 
 struct SQLiteBaseStatements<'a> {
@@ -15,10 +17,16 @@ struct SQLiteBaseStatements<'a> {
     commit_stmt: Statement<'a>,
     rollback_stmt: Statement<'a>,
     savepoint_stmt: Statement<'a>,
+    global_latencies: Arc<Mutex<Vec<Duration>>>,
+    local_latencies: Vec<Duration>,
+    current_start: Option<time::Instant>,
 }
 
 impl<'a> SQLiteBaseStatements<'a> {
-    fn new(conn: *mut rusqlite::Connection) -> SQLiteBaseStatements<'a> {
+    fn new(
+        conn: *mut rusqlite::Connection,
+        global_latencies: Arc<Mutex<Vec<Duration>>>,
+    ) -> SQLiteBaseStatements<'a> {
         let begin_stmt = unsafe { conn.as_ref() }.unwrap().prepare("BEGIN;").unwrap();
 
         let commit_stmt = unsafe { conn.as_ref() }
@@ -41,17 +49,24 @@ impl<'a> SQLiteBaseStatements<'a> {
             commit_stmt,
             rollback_stmt,
             savepoint_stmt,
+            global_latencies,
+            local_latencies: vec![],
+            current_start: None,
         }
     }
 }
 
 impl Connection for SQLiteBaseStatements<'_> {
     fn begin(&mut self) {
+        self.current_start = Some(time::Instant::now());
         self.begin_stmt.execute(params![]).unwrap();
     }
 
     fn commit(&mut self) {
         self.commit_stmt.execute(params![]).unwrap();
+        let stop = time::Instant::now();
+        self.local_latencies
+            .push(stop - self.current_start.unwrap());
     }
 
     fn rollback(&mut self) {
@@ -60,6 +75,15 @@ impl Connection for SQLiteBaseStatements<'_> {
 
     fn savepoint(&mut self) {
         self.savepoint_stmt.execute(params![]).unwrap();
+    }
+}
+
+impl Drop for SQLiteBaseStatements<'_> {
+    fn drop(&mut self) {
+        self.global_latencies
+            .lock()
+            .unwrap()
+            .append(&mut self.local_latencies);
     }
 }
 
@@ -255,7 +279,7 @@ pub struct SQLiteTATPConnection<'a> {
 }
 
 impl<'a> SQLiteTATPConnection<'a> {
-    pub fn new<P>(path: P) -> SQLiteTATPConnection<'a>
+    pub fn new<P>(path: P, global_latencies: Arc<Mutex<Vec<Duration>>>) -> SQLiteTATPConnection<'a>
     where
         P: AsRef<Path>,
     {
@@ -271,7 +295,7 @@ impl<'a> SQLiteTATPConnection<'a> {
             .pragma_update(None, "cache_size", &"-8388608")
             .unwrap();
 
-        let base = SQLiteBaseStatements::new(conn);
+        let base = SQLiteBaseStatements::new(conn, global_latencies);
 
         let get_subscriber_data_stmt = unsafe { conn.as_ref() }
             .unwrap()
@@ -582,7 +606,7 @@ pub struct SQLiteYCSBConnection<'a> {
 }
 
 impl<'a> SQLiteYCSBConnection<'a> {
-    pub fn new<P>(path: P) -> SQLiteYCSBConnection<'a>
+    pub fn new<P>(path: P, global_latencies: Arc<Mutex<Vec<Duration>>>) -> SQLiteYCSBConnection<'a>
     where
         P: AsRef<Path>,
     {
@@ -598,7 +622,7 @@ impl<'a> SQLiteYCSBConnection<'a> {
             .pragma_update(None, "cache_size", &"-8388608")
             .unwrap();
 
-        let base = SQLiteBaseStatements::new(conn);
+        let base = SQLiteBaseStatements::new(conn, global_latencies);
 
         let select_user_stmts = (0..ycsb::NUM_FIELDS)
             .map(|field| {

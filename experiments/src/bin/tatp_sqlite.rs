@@ -8,7 +8,7 @@ use dibs_experiments::worker::{
 };
 use dibs_experiments::{runner, systems};
 use std::str::FromStr;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 
 fn main() {
     let matches = App::new("TATP on SQLite")
@@ -29,7 +29,13 @@ fn main() {
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let dibs = Arc::new(tatp::dibs(optimization));
+    let dibs = if num_transactions_per_group == 1 {
+        None
+    } else {
+        Some(Arc::new(tatp::dibs(optimization)))
+    };
+
+    let global_latencies = Arc::new(Mutex::new(vec![]));
 
     systems::sqlite::load_tatp("tatp.sqlite", num_rows);
 
@@ -37,9 +43,9 @@ fn main() {
 
     let mut workers: Vec<Box<dyn Worker + Send>> = vec![Box::new(GroupCommitWorker::new(
         0,
-        Some(dibs),
+        dibs,
         ReceivingGenerator::new(TATPGenerator::new(num_rows), receiver),
-        SQLiteTATPConnection::new("tatp.sqlite"),
+        SQLiteTATPConnection::new("tatp.sqlite", Arc::clone(&global_latencies)),
         num_transactions_per_group,
     ))];
 
@@ -51,9 +57,19 @@ fn main() {
             worker_id,
             None,
             generator,
-            SQLiteTATPConnection::new("tatp.sqlite"),
+            SQLiteTATPConnection::new("tatp.sqlite", Arc::clone(&global_latencies)),
         )))
     }
 
     runner::run(workers);
+
+    let mut latencies = global_latencies.lock().unwrap();
+    latencies.sort_unstable();
+
+    if latencies.len() > 0 {
+        println!(
+            "99th percentile latency: {} µs",
+            latencies[latencies.len() * 99 / 100].as_micros()
+        );
+    }
 }

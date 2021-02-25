@@ -9,12 +9,14 @@ use dibs_experiments::worker::{
 use dibs_experiments::{runner, systems};
 use rand::distributions::Distribution;
 use std::str::FromStr;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
 fn make_workers<F, D>(
     num_transactions_per_group: usize,
     num_workers: usize,
-    dibs: Arc<Dibs>,
+    dibs: Option<Arc<Dibs>>,
+    global_latencies: Arc<Mutex<Vec<Duration>>>,
     make_generator: F,
 ) -> Vec<Box<dyn Worker + Send>>
 where
@@ -25,9 +27,9 @@ where
 
     let mut workers: Vec<Box<dyn Worker + Send>> = vec![Box::new(GroupCommitWorker::new(
         0,
-        Some(dibs),
+        dibs,
         ReceivingGenerator::new(make_generator(), receiver),
-        SQLiteYCSBConnection::new("ycsb.sqlite"),
+        SQLiteYCSBConnection::new("ycsb.sqlite", Arc::clone(&global_latencies)),
         num_transactions_per_group,
     ))];
 
@@ -39,7 +41,7 @@ where
             worker_id,
             None,
             generator,
-            SQLiteYCSBConnection::new("ycsb.sqlite"),
+            SQLiteYCSBConnection::new("ycsb.sqlite", Arc::clone(&global_latencies)),
         )));
     }
 
@@ -74,29 +76,47 @@ fn main() {
         OptimizationLevel::from_str(matches.value_of("optimization").unwrap()).unwrap();
     let num_workers = usize::from_str(matches.value_of("num_workers").unwrap()).unwrap();
 
-    let dibs = Arc::new(ycsb::dibs(optimization));
+    let dibs = if num_transactions_per_group == 1 {
+        None
+    } else {
+        Some(Arc::new(ycsb::dibs(optimization)))
+    };
+
+    let global_latencies = Arc::new(Mutex::new(vec![]));
 
     systems::sqlite::load_ycsb("ycsb.sqlite", num_rows, field_size);
 
     let workers = if skew == 0.0 {
-        make_workers(num_transactions_per_group, num_workers, dibs, || {
-            ycsb::uniform_generator(
-                num_rows,
-                field_size,
-                select_mix,
-                num_statements_per_transaction,
-            )
-        })
+        make_workers(
+            num_transactions_per_group,
+            num_workers,
+            dibs,
+            global_latencies,
+            || {
+                ycsb::uniform_generator(
+                    num_rows,
+                    field_size,
+                    select_mix,
+                    num_statements_per_transaction,
+                )
+            },
+        )
     } else {
-        make_workers(num_transactions_per_group, num_workers, dibs, || {
-            ycsb::zipf_generator(
-                num_rows,
-                field_size,
-                select_mix,
-                num_statements_per_transaction,
-                skew,
-            )
-        })
+        make_workers(
+            num_transactions_per_group,
+            num_workers,
+            dibs,
+            global_latencies,
+            || {
+                ycsb::zipf_generator(
+                    num_rows,
+                    field_size,
+                    select_mix,
+                    num_statements_per_transaction,
+                    skew,
+                )
+            },
+        )
     };
 
     runner::run(workers);
