@@ -257,14 +257,40 @@ impl Dibs {
         let mut conflicting_requests: Vec<Arc<Request>>;
 
         match self.optimization {
-            OptimizationLevel::Ungrouped | OptimizationLevel::Grouped => {
+            OptimizationLevel::Ungrouped => {
                 let mut template = self.prepared_requests[template_id].template.clone();
+                let buckets = &self.inflight_requests[template.table];
 
-                if self.optimization == OptimizationLevel::Ungrouped
-                    && solver::dnf_blowup(&template.predicate) < self.blowup_limit
-                {
+                if solver::dnf_blowup(&template.predicate) >= self.blowup_limit {
+                    conflicting_requests = vec![];
+
+                    for bucket in buckets {
+                        for request in &*bucket.lock().unwrap() {
+                            conflicting_requests.push(Arc::clone(request));
+                        }
+                    }
+                } else {
                     template.predicate.normalize();
+
+                    let request = Arc::new(Request::new(
+                        transaction.group_id,
+                        transaction.transaction_id,
+                        RequestVariant::AdHoc(template.clone()),
+                        arguments,
+                    ));
+
+                    conflicting_requests = vec![];
+
+                    for bucket in buckets {
+                        conflicting_requests.extend(self.solve_ad_hoc(&request, &template, bucket));
+                    }
                 }
+
+                transaction.buckets.extend(buckets.iter().cloned());
+            }
+
+            OptimizationLevel::Grouped => {
+                let template = self.prepared_requests[template_id].template.clone();
 
                 let request = Arc::new(Request::new(
                     transaction.group_id,
