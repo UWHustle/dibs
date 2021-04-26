@@ -5,8 +5,8 @@ use std::thread;
 use std::time::Duration;
 
 pub fn run(workers: Vec<Box<dyn Worker + Send>>) {
-    let warmup_duration = Duration::from_secs(10);
-    let measurement_duration = Duration::from_secs(60);
+    let warmup_duration = Duration::from_secs(5);
+    let measurement_duration = Duration::from_secs(10);
 
     let commit_counters = (0..workers.len())
         .map(|_| Arc::new(AtomicUsize::new(0)))

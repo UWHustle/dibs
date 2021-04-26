@@ -5,6 +5,7 @@ pub mod scan;
 pub mod seats;
 pub mod tatp;
 pub mod ycsb;
+pub mod nonpk;
 
 pub struct BooleanArrayMut(BooleanArray);
 

@@ -522,10 +522,10 @@ impl TATPConnection for SQLiteTATPConnection<'_> {
             match &error {
                 rusqlite::Error::SqliteFailure(sqlite_error, _) => {
                     if sqlite_error.code != ErrorCode::ConstraintViolation {
-                        panic!(error.to_string())
+                        panic!("{}", error.to_string())
                     }
                 }
-                _ => panic!(error.to_string()),
+                _ => panic!("{}", error.to_string()),
             }
         }
     }

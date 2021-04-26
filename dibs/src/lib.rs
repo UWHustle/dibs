@@ -12,8 +12,6 @@ pub mod predicate;
 mod solver;
 mod union_find;
 
-const FILTER_MAGNITUDE: usize = 8;
-
 #[derive(Clone)]
 pub struct RequestTemplate {
     table: usize,
@@ -215,6 +213,7 @@ impl Dibs {
         optimization: OptimizationLevel,
         blowup_limit: usize,
         timeout: Duration,
+        filter_magnitude: usize,
     ) -> Dibs {
         let prepared_requests = templates
             .iter()
@@ -229,7 +228,7 @@ impl Dibs {
             .iter()
             .map(|filter| {
                 let num_partitions = match filter {
-                    Some(_) => FILTER_MAGNITUDE,
+                    Some(_) => filter_magnitude,
                     None => 1,
                 };
 

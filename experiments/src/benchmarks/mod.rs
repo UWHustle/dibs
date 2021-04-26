@@ -3,3 +3,4 @@ pub mod tatp;
 pub mod tatp_sp;
 pub mod ycsb;
 pub mod seats;
+pub mod nonpk;

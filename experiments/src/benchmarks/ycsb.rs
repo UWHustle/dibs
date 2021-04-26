@@ -223,5 +223,6 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
         optimization,
         usize::max_value(),
         Duration::from_secs(60),
+        1024,
     )
 }

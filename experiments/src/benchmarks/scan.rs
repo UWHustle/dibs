@@ -204,5 +204,6 @@ pub fn dibs(num_conjuncts: usize, optimization: OptimizationLevel, blowup_limit:
         optimization,
         blowup_limit,
         Duration::from_secs(60),
+        1,
     )
 }

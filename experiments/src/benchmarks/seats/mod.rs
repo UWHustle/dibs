@@ -384,5 +384,6 @@ pub fn dibs(optimization: OptimizationLevel) -> Dibs {
         optimization,
         usize::max_value(),
         Duration::from_millis(10),
+        8,
     )
 }

@@ -151,6 +151,8 @@ where
 
                 if result.is_ok() {
                     break;
+                } else {
+                    transaction.commit()
                 }
             }
 
