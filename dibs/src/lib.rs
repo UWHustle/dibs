@@ -85,7 +85,7 @@ struct PreparedRequest {
     conflicts: Vec<Option<Predicate>>,
 }
 
-type RequestBucket = Arc<Mutex<Vec<Arc<Request>>>>;
+type RequestBucket = Arc<spin::Mutex<Vec<Arc<Request>>>>;
 
 fn potential_conflict(p: &RequestTemplate, q: &RequestTemplate) -> bool {
     p.table == q.table
@@ -183,7 +183,6 @@ impl Transaction {
         for bucket in &self.buckets {
             for request in bucket
                 .lock()
-                .unwrap()
                 .drain_filter(|request| request.transaction_id == transaction_id)
             {
                 request.complete();
@@ -233,7 +232,7 @@ impl Dibs {
                 };
 
                 (0..num_partitions)
-                    .map(|_| Arc::new(Mutex::new(vec![])))
+                    .map(|_| Arc::new(spin::Mutex::new(vec![])))
                     .collect()
             })
             .collect();
@@ -264,7 +263,7 @@ impl Dibs {
                     conflicting_requests = vec![];
 
                     for bucket in buckets {
-                        for request in &*bucket.lock().unwrap() {
+                        for request in &*bucket.lock() {
                             conflicting_requests.push(Arc::clone(request));
                         }
                     }
@@ -377,7 +376,7 @@ impl Dibs {
         let mut other_requests = vec![];
 
         {
-            let mut bucket_guard = bucket.lock().unwrap();
+            let mut bucket_guard = bucket.lock();
             other_requests.extend(bucket_guard.iter().cloned());
             bucket_guard.push(Arc::clone(request));
         }
@@ -419,7 +418,7 @@ impl Dibs {
         let mut other_requests = vec![];
 
         {
-            let mut bucket_guard = bucket.lock().unwrap();
+            let mut bucket_guard = bucket.lock();
             other_requests.extend(bucket_guard.iter().cloned());
             bucket_guard.push(Arc::clone(request));
         };
