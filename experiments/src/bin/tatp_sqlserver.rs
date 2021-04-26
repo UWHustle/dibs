@@ -5,6 +5,8 @@ use dibs_experiments::systems::sqlserver::SQLServerTATPConnection;
 use dibs_experiments::worker::{StandardWorker, Worker};
 use dibs_experiments::{runner, systems};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 fn main() {
     let matches = App::new("TATP on SQL Server")
@@ -21,6 +23,8 @@ fn main() {
         systems::sqlserver::load_tatp(env, num_rows).unwrap();
     }
 
+    let retry_count = Arc::new(AtomicUsize::new(0));
+
     {
         let mut workers: Vec<Box<dyn Worker + Send>> = Vec::with_capacity(num_workers);
 
@@ -29,12 +33,14 @@ fn main() {
                 worker_id,
                 None,
                 TATPSPGenerator::new(num_rows),
-                SQLServerTATPConnection::new(env).unwrap(),
+                SQLServerTATPConnection::new(env, Arc::clone(&retry_count)).unwrap(),
             )));
         }
 
         runner::run(workers);
     }
+
+    println!("{}", retry_count.load(Ordering::Relaxed));
 
     unsafe {
         free_env(env).unwrap();
